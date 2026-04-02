@@ -100,7 +100,7 @@ Instead of fragmented setups and ad-hoc scripts, this provides:
 ## 🛠 Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/voiceai-installer.git
+git clone https://github.com/okaybeydanol/voiceai-installer.git
 cd voiceai-installer
 
 chmod +x bootstrap.sh

@@ -258,7 +258,6 @@ from __future__ import annotations
 import logging
 from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from .. import config as cfg_module
 from ..audio import decode_audio_bytes
 from ..holder import TranscriberHolder
 log = logging.getLogger("voiceai.stt.routes.transcribe")
@@ -301,6 +300,84 @@ async def transcribe(
     return out
 PYEOF
 
+cat > "$STT_ROUTES/admin.py" <<'PYEOF'
+"""STT admin routes. Global model switch via atomic config write."""
+from __future__ import annotations
+import asyncio, os, tempfile
+from pathlib import Path
+import yaml
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/admin")
+CANONICAL = frozenset({
+    "faster-whisper-tiny", "faster-whisper-tiny.en",
+    "faster-whisper-base", "faster-whisper-base.en",
+    "faster-whisper-small", "faster-whisper-small.en",
+    "faster-whisper-medium", "faster-whisper-medium.en",
+})
+_lock: "asyncio.Lock | None" = None
+
+class SwitchReq(BaseModel):
+    model: str
+
+
+def _switch_lock() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
+
+
+def _cfg_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "config.yml"
+
+
+@router.post("/switch_model")
+async def switch_model(req: SwitchReq) -> dict:
+    name = req.model.strip()
+    if not name:
+        raise HTTPException(400, "model required")
+    if name not in CANONICAL:
+        raise HTTPException(400, f"Invalid model '{name}'. Canonical: {sorted(CANONICAL)}")
+
+    cfg_path = _cfg_path()
+    if not cfg_path.is_file():
+        raise HTTPException(500, f"STT config not found: {cfg_path}")
+
+    async with _switch_lock():
+        with cfg_path.open(encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+        if not isinstance(cfg, dict) or "model" not in cfg:
+            raise HTTPException(500, "Unexpected config.yml shape")
+
+        prev = cfg.get("model", {}).get("model_name")
+        cfg["model"]["model_name"] = name
+
+        content = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        orig_mode = cfg_path.stat().st_mode & 0o777 if cfg_path.exists() else 0o644
+        fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, prefix=".config.yml.")
+        try:
+            os.fchmod(fd, orig_mode)
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                out.write(content)
+            os.replace(tmp, cfg_path)
+            os.chmod(cfg_path, orig_mode)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    return {
+        "ok": True,
+        "message": f"STT model: {prev} → {name}. watchfiles hot-reload in <1s.",
+        "previous_model": prev,
+        "target_model": name,
+    }
+PYEOF
+
 # ── main.py ───────────────────────────────────────────────────────────────────
 cat > "$STT_SRC/main.py" <<'PYEOF'
 #!/usr/bin/env python3
@@ -311,7 +388,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from . import config as cfg_module
 from .holder import TranscriberHolder
-from .routes import health as health_routes, transcribe as transcribe_routes
+from .routes import admin as admin_routes, health as health_routes, transcribe as transcribe_routes
 
 _LOG = {
     "version": 1, "disable_existing_loggers": False,
@@ -343,8 +420,9 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError: pass
 
 def create_app():
-    app = FastAPI(title="VoiceAI STT", version="3.0.0", lifespan=lifespan)
+    app = FastAPI(title="VoiceAI STT", version="3.1.0", lifespan=lifespan)
     app.include_router(health_routes.router)
+    app.include_router(admin_routes.router)
     app.include_router(transcribe_routes.router)
     return app
 

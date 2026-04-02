@@ -8,7 +8,7 @@
 # NOT in this script — use the admin/ layer instead:
 #   LAN switching         → python admin/lan_mode.py
 #   TTS engine switching  → python admin/tts_switch.py   (global backend-admin)
-#   STT model switching   → python admin/stt_switch.py
+#   STT model switching   → backend STT HTTP admin endpoint (/admin/switch_model)
 #   LLM context info      → python admin/context.py
 #   Memory admin          → python admin/memory_admin.py
 #   Safe web fetch        → python admin/web_fetch.py
@@ -335,7 +335,7 @@ This script: lifecycle only (start/stop/restart/status/logs)
 Admin ops (use admin/ layer — backend-global):
   python admin/lan_mode.py lan|local|status    — LAN switching
   python admin/tts_switch.py <engine>           — global TTS engine switch
-  python admin/stt_switch.py <model>            — STT model switch
+  STT model switch                              — backend HTTP only (/admin/switch_model)
   python admin/context.py                       — LLM context ceiling
   python admin/memory_admin.py init|list|search — Qdrant collection admin
   python admin/web_fetch.py <url>               — safe operator web fetch
@@ -347,7 +347,6 @@ Telemetry API (read-only, 127.0.0.1:5900):
   GET /metrics/processes                        — PID-attributed CPU/RAM/VRAM
   GET /inventory/personas                       — available persona files
   GET /inventory/reference-audio                — Chatterbox voice reference files
-  GET /inventory/models/stt                     — STT models on disk
   GET /inventory/context                        — LLM model + context ceiling
   GET /inventory/memory                         — Qdrant collection stats
 

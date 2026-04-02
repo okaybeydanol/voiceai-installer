@@ -73,18 +73,18 @@ _write_unit "voiceai-livekit" \
 _write_unit "voiceai-llm" \
   "VoiceAI LLM (TabbyAPI)" \
   "network.target" \
-  "/bin/bash -c '. %h/ai-projects/voiceai/llm/tabbyAPI/venv/bin/activate && exec python main.py'" \
+  "%h/ai-projects/voiceai/bin/start-llm.sh" \
   "60" "300" "3"
 
 _write_unit "voiceai-stt" \
   "VoiceAI STT (Faster-Whisper)" \
   "network.target" \
-  "/bin/bash -c '. %h/ai-projects/voiceai/stt/faster-whisper-service/venv/bin/activate && exec python -m src.main'"
+  "%h/ai-projects/voiceai/bin/start-stt.sh"
 
 _write_unit "voiceai-tts" \
   "VoiceAI TTS Router + Worker" \
   "network.target" \
-  "/bin/bash -c '. %h/ai-projects/voiceai/tts/repos/router/.venv/bin/activate && exec python -m src.main'" \
+  "%h/ai-projects/voiceai/bin/start-tts.sh" \
   "45"
 
 # Qdrant: simple binary, loopback-only, must start before agent

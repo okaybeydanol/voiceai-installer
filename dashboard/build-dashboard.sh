@@ -380,19 +380,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 EOF
 
 # ==============================================================================
-# 14 · app/api/stt/switch/route.ts — global STT model switch
-# Writes config.yml atomically (tmp + rename). watchfiles hot-reloads in <1s.
+# 14 · app/api/stt/switch/route.ts — global STT model switch via backend HTTP
+# Mirrors the TTS pattern: Next route validates, backend STT admin endpoint writes config.
 # ==============================================================================
 cat > app/api/stt/switch/route.ts << 'EOF'
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
-import { readFileSync, writeFileSync, renameSync, existsSync, statSync, chmodSync } from "fs";
-import { join } from "path";
-import yaml from "js-yaml";
 import { STT_CANONICAL_MODELS } from "@/lib/types";
-import { serverConfig } from "@/server/config";
 
+const STT_ADMIN_URL = "http://127.0.0.1:5100";
 const CANONICAL = new Set<string>(STT_CANONICAL_MODELS);
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -411,46 +408,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const cfgPath = join(
-    serverConfig.voiceaiRoot,
-    "stt",
-    "faster-whisper-service",
-    "config.yml",
-  );
-
-  if (!existsSync(cfgPath)) {
-    return NextResponse.json(
-      { ok: false, message: `STT config.yml not found: ${cfgPath}` },
-      { status: 500 },
-    );
-  }
-
   try {
-    const cfg = yaml.load(readFileSync(cfgPath, "utf8")) as {
-      model: { model_name: string; [key: string]: unknown };
-      [key: string]: unknown;
-    };
-
-    if (!cfg?.model) {
-      return NextResponse.json({ ok: false, message: "Unexpected config.yml shape" }, { status: 500 });
-    }
-
-    const prev = cfg.model.model_name;
-    cfg.model.model_name = model;
-
-    const tmp  = `${cfgPath}.tmp`;
-    const mode = statSync(cfgPath).mode & 0o777;
-    writeFileSync(tmp, yaml.dump(cfg, { lineWidth: -1 }), { encoding: "utf8", mode });
-    renameSync(tmp, cfgPath);
-    chmodSync(cfgPath, mode);
-
-    return NextResponse.json({
-      ok:      true,
-      message: `STT model: ${prev} → ${model}. watchfiles hot-reload in <1s.`,
+    const upstream = await fetch(`${STT_ADMIN_URL}/admin/switch_model`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ model }),
+      signal:  AbortSignal.timeout(10_000),
     });
+    const data = await upstream.json().catch(() => ({}));
+    return NextResponse.json(data, { status: upstream.status });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ ok: false, message: `Write failed: ${message}` }, { status: 500 });
+    return NextResponse.json({ ok: false, message: `STT service unreachable: ${message}` }, { status: 502 });
   }
 }
 EOF
@@ -1073,33 +1042,7 @@ export function useLlmContext() {
 EOF
 
 # ==============================================================================
-# 29 · hooks/useSttInventory.ts
-# ==============================================================================
-cat > hooks/useSttInventory.ts << 'EOF'
-"use client";
-
-import { usePoll } from "./usePoll";
-import { POLL } from "@/lib/constants";
-import type { SttModelItem } from "@/lib/types";
-
-interface SttInventory {
-  models: SttModelItem[];
-  count:  number;
-}
-
-async function fetchSttInventory(): Promise<SttInventory> {
-  const res = await fetch("/api/proxy/telemetry/inventory/models/stt", { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export function useSttInventory() {
-  return usePoll<SttInventory>(fetchSttInventory, POLL.SLOW);
-}
-EOF
-
-# ==============================================================================
-# 30 · hooks/useInventory.ts — personas + reference audio
+# 29 · hooks/useInventory.ts — personas + reference audio
 # ==============================================================================
 cat > hooks/useInventory.ts << 'EOF'
 "use client";
@@ -1736,7 +1679,6 @@ cat > components/services/SttCard.tsx << 'EOF'
 
 import { useState } from "react";
 import { usePoll }         from "@/hooks/usePoll";
-import { useSttInventory } from "@/hooks/useSttInventory";
 import { GlassCard }     from "@/components/shared/GlassCard";
 import { SectionHeader } from "@/components/shared/SectionHeader";
 import { StatusDot }     from "@/components/shared/StatusDot";
@@ -1760,7 +1702,6 @@ async function fetchSttHealth(): Promise<SttHealth> {
 
 export function SttCard() {
   const health    = usePoll<SttHealth>(fetchSttHealth, POLL.NORMAL);
-  const inventory = useSttInventory();
 
   const [selected,  setSelected]  = useState("");
   const [switching, setSwitching] = useState(false);
@@ -1804,12 +1745,6 @@ export function SttCard() {
           <Mono dim>Active model</Mono>
           <Mono className="text-slate-300">{health.data?.model ?? "—"}</Mono>
         </div>
-        {inventory.data && (
-          <div className="flex justify-between">
-            <Mono dim>Models on disk</Mono>
-            <Mono className="text-slate-300">{inventory.data.count}</Mono>
-          </div>
-        )}
       </div>
 
       {/* Global model switch — admin-only, isolated in amber section */}

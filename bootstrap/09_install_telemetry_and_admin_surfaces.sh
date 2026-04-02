@@ -12,7 +12,7 @@
 #          admin/__init__.py
 #          admin/lan_mode.py
 #          admin/tts_switch.py
-#          admin/stt_switch.py
+#          STT switch now lives in the STT service backend HTTP admin endpoint
 #          admin/context.py
 #          admin/memory_admin.py
 #          admin/web_fetch.py
@@ -328,18 +328,6 @@ def create_app() -> FastAPI:
                   for f in sorted(idir.iterdir()) if f.suffix.lower() in exts and f.is_file()]
         return {"voices": result, "count": len(result), "directory": str(idir)}
 
-    @app.get("/inventory/models/stt")
-    async def inventory_stt_models():
-        mdir = VOICEAI_ROOT / "models" / "stt"
-        if not mdir.is_dir(): return {"models": [], "error": f"Not found: {mdir}"}
-        canonical = {"faster-whisper-tiny", "faster-whisper-tiny.en", "faster-whisper-base",
-                     "faster-whisper-base.en", "faster-whisper-small", "faster-whisper-small.en",
-                     "faster-whisper-medium", "faster-whisper-medium.en"}
-        result = [{"name": d.name, "canonical": d.name in canonical,
-                   "files": sum(1 for _ in d.rglob("*") if _.is_file())}
-                  for d in sorted(mdir.iterdir()) if d.is_dir()]
-        return {"models": result, "count": len(result)}
-
     @app.get("/inventory/context")
     async def inventory_context():
         """Ph-9: LLM model info + context ceiling from TabbyAPI."""
@@ -528,57 +516,6 @@ if __name__ == "__main__":
     cmd = sys.argv[1].strip().lower()
     if cmd == "status": print(json.dumps(status(), indent=2))
     else:               print(json.dumps(switch(cmd), indent=2))
-PYEOF
-
-# ── admin/stt_switch.py ───────────────────────────────────────────────────────
-cat > "$ROOT/admin/stt_switch.py" <<'PYEOF'
-#!/usr/bin/env python3
-"""VoiceAI Admin — STT model switch. Atomic write, preserves permissions."""
-from __future__ import annotations
-import os, sys, tempfile
-from pathlib import Path
-import yaml
-
-ROOT = Path(os.environ.get("VOICEAI_ROOT", str(Path.home() / "ai-projects" / "voiceai")))
-CFG  = ROOT / "stt" / "faster-whisper-service" / "config.yml"
-MODELS = ROOT / "models" / "stt"
-CANONICAL = frozenset({
-    "faster-whisper-tiny", "faster-whisper-tiny.en",
-    "faster-whisper-base", "faster-whisper-base.en",
-    "faster-whisper-small", "faster-whisper-small.en",
-    "faster-whisper-medium", "faster-whisper-medium.en",
-})
-
-def _available():
-    return sorted(d.name for d in MODELS.iterdir() if d.is_dir()) if MODELS.exists() else []
-
-def switch(name):
-    if name not in CANONICAL:
-        print(f"WARNING: '{name}' is non-canonical. Canonical: {sorted(CANONICAL)}", file=sys.stderr)
-    avail = _available()
-    if avail and name not in avail: raise SystemExit(f"Model '{name}' not found. Available: {avail}")
-    if not CFG.is_file(): raise SystemExit(f"STT config not found: {CFG}")
-    with CFG.open() as f: cfg = yaml.safe_load(f)
-    cfg["model"]["model_name"] = name
-    content = yaml.dump(cfg, default_flow_style=False, allow_unicode=True)
-    orig_mode = CFG.stat().st_mode & 0o777 if CFG.exists() else 0o644
-    fd, tmp = tempfile.mkstemp(dir=CFG.parent, prefix=".config.yml.")
-    try:
-        os.fchmod(fd, orig_mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh: fh.write(content)
-        os.replace(tmp, CFG); os.chmod(CFG, orig_mode)
-    except Exception:
-        try: os.unlink(tmp)
-        except OSError: pass
-        raise
-    print(f"STT model → '{name}'. watchfiles hot-reload in <1s.")
-
-def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: stt_switch.py <model>\nCanonical: {sorted(CANONICAL)}\nOn disk: {_available() or '(none)'}"); sys.exit(1)
-    switch(sys.argv[1])
-
-if __name__ == "__main__": main()
 PYEOF
 
 # ── admin/context.py ──────────────────────────────────────────────────────────
@@ -914,7 +851,7 @@ if (ROOT / "telemetry" / "src" / "collectors" / "processes.py").is_file(): _p("p
 else: _f("processes.py missing")
 
 _s("Admin Layer")
-for f in ["lan_mode.py", "tts_switch.py", "stt_switch.py", "validate.py",
+for f in ["lan_mode.py", "tts_switch.py", "validate.py",
           "context.py", "memory_admin.py", "web_fetch.py"]:
     if (ROOT / "admin" / f).is_file(): _p(f"admin/{f}")
     else: _f(f"admin/{f} missing")
@@ -947,7 +884,7 @@ sys.exit(1 if FAIL > 0 else 0)
 PYEOF
 
 chmod +x "$ROOT/admin/lan_mode.py" "$ROOT/admin/tts_switch.py" \
-         "$ROOT/admin/stt_switch.py" "$ROOT/admin/validate.py" \
+         "$ROOT/admin/validate.py" \
          "$ROOT/admin/context.py" "$ROOT/admin/memory_admin.py" \
          "$ROOT/admin/web_fetch.py"
-_ok "Admin layer written (v4: memory_admin + web_fetch + Qdrant in validate)"
+_ok "Admin layer written (v4: memory_admin + web_fetch + Qdrant in validate; STT switch lives in STT backend HTTP admin)"

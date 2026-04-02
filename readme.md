@@ -106,6 +106,10 @@ cd voiceai-installer
 chmod +x bootstrap.sh
 ./bootstrap.sh
 
+cd dashboard
+chmod +x build-dashboard.sh
+./build-dashboard.sh
+
 cd /home/{PROFILE_NAME}/ai-projects/voiceai/bin/
 chmod +x voiceai-ctl.sh
 
@@ -128,7 +132,7 @@ bootstrap/
   ├── ...
   └── 11_download_models_and_finalize.sh
 
-nextjs/
+dashboard/
   └── build-dashboard.sh
 
 bootstrap.sh
@@ -151,7 +155,8 @@ Each stage is designed to be:
 * Agent system: ✅
 * Memory (Qdrant): ✅
 * Telephony layer: ✅
-* Dashboard (Next.js): ⏳
+* Dashboard (Next.js): 
+It's almost finished. Only prettier, types, eslint, and a couple of performance points remain. ⏳
 
 ---
 

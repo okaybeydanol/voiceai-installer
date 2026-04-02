@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# bootstrap.sh — VoiceAI Canonical Installer  v4  (Staged Orchestrator)
+# bootstrap.sh — VoiceAI Canonical Installer (Staged Orchestrator)
 # ==============================================================================
 # This file is the ONLY root-level entrypoint.
 # It defines all globals, then delegates to numbered stage scripts in bootstrap/.

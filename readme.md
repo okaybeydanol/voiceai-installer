@@ -105,6 +105,15 @@ cd voiceai-installer
 
 chmod +x bootstrap.sh
 ./bootstrap.sh
+
+cd /home/{PROFILE_NAME}/ai-projects/voiceai/bin/
+chmod +x voiceai-ctl.sh
+
+./voiceai-ctl.sh start
+./voiceai-ctl.sh status
+./voiceai-ctl.sh logs agent
+./voiceai-ctl.sh health
+./voiceai-ctl.sh validate
 ```
 
 ---
@@ -117,7 +126,7 @@ bootstrap/
   ├── 01_prepare_layout_and_environment.sh
   ├── 02_run_preflight_and_shared_tools.sh
   ├── ...
-  └── 09_install_telemetry_and_admin_surfaces.sh
+  └── 11_download_models_and_finalize.sh
 
 nextjs/
   └── build-dashboard.sh
@@ -141,8 +150,8 @@ Each stage is designed to be:
 * LLM / STT / TTS: ✅
 * Agent system: ✅
 * Memory (Qdrant): ✅
+* Telephony layer: ✅
 * Dashboard (Next.js): ⏳
-* Telephony layer: ⏳
 
 ---
 

@@ -135,7 +135,7 @@ try:
         vu = round(float(w.get('vram_total_gb',0)) - float(w.get('vram_free_gb',0)), 1)
     except Exception:
         vu = '?'
-    print(f'mode={mode} phase={phase} VRAM:{vu}GB{sw}', end='')
+    print(f'mode={mode} phase={phase}, end='')
 except Exception:
     pass
 " 2>/dev/null
@@ -363,7 +363,7 @@ Note: qdrant (memory backbone) must start before agent.
 
 Status detail (inline per service):
   stt    — active model name (reflects hot-reload)
-  tts    — engine mode / router phase / VRAM
+  tts    — engine mode / router phase
   qdrant — collection names + vector counts
   agent  — session_active / persona / voice_mode / room / mem=on|off / token_count
 

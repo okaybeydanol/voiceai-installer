@@ -190,7 +190,7 @@ import httpx
 log = logging.getLogger("voiceai.telemetry.services")
 
 _SERVICES: dict[str, "str | None"] = {
-    "livekit":    "http://127.0.0.1:7880/health",
+    "livekit":    "tcp://127.0.0.1:7880",
     "llm":        "http://127.0.0.1:5000/v1/models",
     "stt":        "http://127.0.0.1:5100/health",
     "tts_router": "http://127.0.0.1:5200/health",
@@ -204,14 +204,32 @@ async def collect_all(client: httpx.AsyncClient) -> dict[str, Any]:
     tasks = {n: asyncio.create_task(_poll(n, u, client)) for n, u in _SERVICES.items()}
     return {n: await t for n, t in tasks.items()}
 
+async def _tcp_open(host: str, port: int) -> bool:
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
 async def _poll(name: str, url: "str | None", client: httpx.AsyncClient) -> dict[str, Any]:
-    if url is None: return {"online": False, "note": "No HTTP health endpoint."}
+    if url is None: return {"online": False, "note": "No health endpoint."}
     t0 = time.perf_counter()
     try:
-        r  = await client.get(url, timeout=_T); ms = round((time.perf_counter() - t0) * 1000, 1)
+        if url.startswith("tcp://"):
+            hp = url[len("tcp://"):]
+            host, port_s = hp.rsplit(":", 1)
+            ok = await _tcp_open(host, int(port_s))
+            return {"online": ok, "latency_ms": round((time.perf_counter() - t0) * 1000, 1)}
+        r = await client.get(url, timeout=_T)
+        ms = round((time.perf_counter() - t0) * 1000, 1)
         try: body = r.json()
-        except: body = {}
-        res: dict = {"online": r.status_code in (200, 204), "latency_ms": ms}
+        except Exception: body = {}
+        res: dict[str, Any] = {"online": r.status_code in (200, 204), "latency_ms": ms}
         if res["online"] and body: res["data"] = body
         return res
     except (httpx.ConnectError, httpx.TimeoutException):
@@ -733,9 +751,18 @@ def _perm600(path, label):
 
 def _health(url, label):
     try:
+        if url.startswith("tcp://"):
+            import socket
+            hp = url[len("tcp://"):]
+            host, port_s = hp.rsplit(":", 1)
+            with socket.create_connection((host, int(port_s)), timeout=3):
+                pass
+            _p(f"{label} responding (tcp open)")
+            return
         with urllib.request.urlopen(url, timeout=3) as r:
             _p(f"{label} responding ({r.status})")
-    except Exception: _w(f"{label} not responding ({url})")
+    except Exception:
+        _w(f"{label} not responding ({url})")
 
 CANONICAL_STT = {"faster-whisper-tiny", "faster-whisper-tiny.en", "faster-whisper-base",
                  "faster-whisper-base.en", "faster-whisper-small", "faster-whisper-small.en",
@@ -865,7 +892,7 @@ for u in ["voiceai-livekit", "voiceai-llm", "voiceai-stt", "voiceai-tts",
 
 _s("Live Service Health  (WARN = not running)")
 for label, url in [
-    ("LiveKit",     "http://127.0.0.1:7880/health"),
+    ("LiveKit",     "tcp://127.0.0.1:7880"),
     ("LLM",         "http://127.0.0.1:5000/v1/models"),
     ("STT",         "http://127.0.0.1:5100/health"),
     ("TTS Router",  "http://127.0.0.1:5200/health"),

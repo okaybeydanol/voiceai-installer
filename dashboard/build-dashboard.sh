@@ -1466,61 +1466,67 @@ import { POLL } from "@/lib/constants";
 import type { ServiceStatus } from "@/lib/types";
 
 interface ServiceDef {
+  key:   string;
   label: string;
-  url:   string;
   port:  number;
 }
 
 const SERVICES: ServiceDef[] = [
-  { label: "LiveKit",   url: "/api/proxy/livekit/health",   port: 7880 },
-  { label: "LLM",       url: "/api/proxy/llm/v1/models",    port: 5000 },
-  { label: "STT",       url: "/api/proxy/stt/health",       port: 5100 },
-  { label: "TTS",       url: "/api/proxy/tts/health",       port: 5200 },
-  { label: "Qdrant",    url: "/api/proxy/qdrant/",          port: 6333 },
-  { label: "Telemetry", url: "/api/proxy/telemetry/health", port: 5900 },
-  { label: "Agent",     url: "/api/proxy/agent/health",     port: 5800 },
+  { key: "livekit",   label: "LiveKit",   port: 7880 },
+  { key: "llm",       label: "LLM",       port: 5000 },
+  { key: "stt",       label: "STT",       port: 5100 },
+  { key: "tts_router",label: "TTS",       port: 5200 },
+  { key: "qdrant",    label: "Qdrant",    port: 6333 },
+  { key: "telemetry", label: "Telemetry", port: 5900 },
+  { key: "agent",     label: "Agent",     port: 5800 },
 ];
 
-interface HealthRow {
-  status:  ServiceStatus;
-  latency: number;
+interface TelemetryServiceRow {
+  online?: boolean;
+  latency_ms?: number;
 }
 
-function makeHealthFetcher(url: string) {
-  return async (): Promise<HealthRow> => {
-    const t0  = performance.now();
-    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(3_000) });
-    return {
-      status:  res.ok ? "online" : "degraded",
-      latency: Math.round(performance.now() - t0),
-    };
-  };
+interface ServicesPayload {
+  stale?: boolean;
+  services?: Record<string, TelemetryServiceRow>;
 }
 
-function ServiceChip({ svc }: { svc: ServiceDef }) {
-  const { data, loading } = usePoll<HealthRow>(makeHealthFetcher(svc.url), POLL.NORMAL);
-  const status: ServiceStatus = loading ? "unknown" : (data?.status ?? "offline");
+async function fetchServices(): Promise<ServicesPayload> {
+  const res = await fetch("/api/proxy/telemetry/metrics/services", {
+    cache: "no-store",
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 
-  return (
-    <div className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-black/15 px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <StatusDot status={status} />
-        <span className="text-xs font-medium text-slate-300">{svc.label}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        {data?.latency != null && <Mono dim>{data.latency}ms</Mono>}
-        <Mono dim>{svc.port}</Mono>
-      </div>
-    </div>
-  );
+function toStatus(row?: TelemetryServiceRow): ServiceStatus {
+  if (!row) return "unknown";
+  return row.online ? "online" : "offline";
 }
 
 export function ServiceGrid() {
+  const { data, loading } = usePoll<ServicesPayload>(fetchServices, POLL.NORMAL);
+  const svcMap = data?.services ?? {};
+
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-      {SERVICES.map((svc) => (
-        <ServiceChip key={svc.label} svc={svc} />
-      ))}
+      {SERVICES.map((svc) => {
+        const row = svcMap[svc.key];
+        const status: ServiceStatus = loading ? "unknown" : toStatus(row);
+        return (
+          <div key={svc.key} className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-black/15 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <StatusDot status={status} />
+              <span className="text-xs font-medium text-slate-300">{svc.label}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {row?.latency_ms != null && <Mono dim>{Math.round(row.latency_ms)}ms</Mono>}
+              <Mono dim>{svc.port}</Mono>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

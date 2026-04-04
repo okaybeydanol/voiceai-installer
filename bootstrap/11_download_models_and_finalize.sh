@@ -213,7 +213,10 @@ _lk_cleanup() {
 }
 trap _lk_cleanup EXIT INT TERM
 
-if ! curl -fsS --max-time 2 "http://127.0.0.1:${PORT_LIVEKIT}/health" >/dev/null 2>&1; then
+if ss -ltn | grep -q ":${PORT_LIVEKIT}"; then
+  _skip "LiveKit already running"
+  trap - EXIT INT TERM
+else
   setsid "$LK_BIN" --config "$LK_DIR/livekit.yaml" > "$LK_LOG" 2>&1 &
   LK_PID=$!
   LK_PGID="$(ps -o pgid= -p "$LK_PID" 2>/dev/null | tr -d ' ')" || LK_PGID=""
@@ -223,9 +226,7 @@ if ! curl -fsS --max-time 2 "http://127.0.0.1:${PORT_LIVEKIT}/health" >/dev/null
   else
     _warn "LiveKit smoke test FAILED — check $LK_LOG"
   fi
-  _lk_cleanup; trap - EXIT INT TERM
-else
-  _skip "LiveKit already running"
+  _lk_cleanup
   trap - EXIT INT TERM
 fi
 

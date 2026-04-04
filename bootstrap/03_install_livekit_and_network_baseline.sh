@@ -149,10 +149,5 @@ PY
   _harden "$LK_DIR/livekit.yaml"
 }
 
-if [ -f "$LK_DIR/livekit.yaml" ]; then
-  _skip "livekit.yaml exists"
-  _harden "$LK_DIR/livekit.yaml"
-else
-  _render_livekit_loopback
-  _ok "livekit.yaml rendered (loopback)"
-fi
+_render_livekit_loopback
+_ok "livekit.yaml rendered (loopback)"

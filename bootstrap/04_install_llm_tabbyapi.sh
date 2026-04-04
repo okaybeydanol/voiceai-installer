@@ -62,21 +62,42 @@ fi
 # ==============================================================================
 _banner "04 / LLM — TabbyAPI config"
 
-cat > "$TABBY_DIR/config.yml" <<CFG
-network:
+python3 - <<PY
+from pathlib import Path
+import os, stat, tempfile
+
+path = Path(r"$TABBY_DIR/config.yml")
+content = f"""network:
   host: 127.0.0.1
-  port: ${PORT_LLM}
+  port: {os.environ.get('PORT_LLM', '$PORT_LLM')}
   disable_auth: true
 model:
-  model_dir: "${ROOT}/models/llm"
+  model_dir: "$ROOT/models/llm"
   model_name: "Qwen3.5-35B-A3B-EXL3"
   cache_size: 16384
   gpu_split_auto: true
 logging:
   prompt: false
   generation_params: false
-CFG
-_ok "TabbyAPI config.yml written (canonical network.disable_auth=true)"
+"""
+mode = 0o644
+if path.exists():
+    mode = path.stat().st_mode & 0o777
+fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix='.config.', text=True)
+try:
+    os.fchmod(fd, mode)
+    with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+        fh.write(content)
+    os.replace(tmp, path)
+    os.chmod(path, mode)
+finally:
+    try:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    except Exception:
+        pass
+PY
+_ok "TabbyAPI config.yml written"
 
 cat > "$ROOT/bin/start-llm.sh" <<'SCRIPT'
 #!/usr/bin/env bash

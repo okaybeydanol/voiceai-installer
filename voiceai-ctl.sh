@@ -127,15 +127,17 @@ import json, urllib.request
 try:
     with urllib.request.urlopen('http://127.0.0.1:5200/health', timeout=2) as r:
         d = json.loads(r.read())
-    mode  = d.get('active_mode') or 'none'
-    phase = d.get('router_phase', '?')
-    sw    = ' [SWITCHING]' if d.get('switching') else ''
-    w     = d.get('worker', {})
-    try:
-        vu = round(float(w.get('vram_total_gb',0)) - float(w.get('vram_free_gb',0)), 1)
-    except Exception:
-        vu = '?'
-    print(f'mode={mode} phase={phase}, end='')
+    mode     = d.get('active_mode') or 'none'
+    phase    = d.get('router_phase', '?')
+    sw       = ' switching=true' if d.get('switching') else ''
+    inflight = d.get('inflight')
+    ready    = d.get('worker_ready')
+    parts = [f'mode={mode}', f'phase={phase}']
+    if ready is not None:
+        parts.append(f'worker={str(bool(ready)).lower()}')
+    if inflight is not None:
+        parts.append(f'inflight={inflight}')
+    print(' '.join(parts) + sw, end='')
 except Exception:
     pass
 " 2>/dev/null
@@ -180,7 +182,10 @@ try:
         d = json.loads(r.read())
     colls = d.get('result',{}).get('collections',[])
     counts = {c['name'].replace('voiceai_',''): c.get('vectors_count',0) for c in colls}
-    if counts: print('collections: ' + '  '.join(f'{k}={v}' for k,v in counts.items()), end='')
+    if counts:
+        print('collections=' + str(len(counts)) + ' ' + ' '.join(f'{k}={v}' for k,v in counts.items()), end='')
+    else:
+        print('collections=0', end='')
 except Exception:
     pass
 " 2>/dev/null
@@ -188,30 +193,34 @@ except Exception:
 
 _livekit_detail() {
   python3 -c "
-import os
-root = os.environ.get('VOICEAI_ROOT', os.path.expanduser('~/ai-projects/voiceai'))
-lan = os.path.join(root, 'config', 'lan_ip.txt')
-if os.path.isfile(lan):
-    ip = open(lan, 'r', encoding='utf-8').read().strip()
-    print(f'ws={ip}:7880', end='')
-else:
+import socket
+s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(1.5)
+try:
+    s.connect(('127.0.0.1', 7880))
     print('ws=127.0.0.1:7880', end='')
+except Exception:
+    pass
+finally:
+    try: s.close()
+    except Exception: pass
 " 2>/dev/null
 }
 
 _llm_detail() {
   python3 -c "
 import json, urllib.request
+req = urllib.request.Request('http://127.0.0.1:5000/v1/model', headers={'Authorization': 'Bearer local'})
 try:
-    with urllib.request.urlopen('http://127.0.0.1:5000/v1/model', timeout=2) as r:
+    with urllib.request.urlopen(req, timeout=2) as r:
         d = json.loads(r.read())
-    model = d.get('id') or d.get('name') or d.get('model_name') or '?'
-    params = d.get('parameters') or d.get('properties') or {}
-    ctx = params.get('max_seq_len') or params.get('context_length')
-    if ctx is not None:
-        print(f'model={model} ctx={ctx}', end='')
-    else:
-        print(f'model={model}', end='')
+    model_id = d.get('id') or d.get('name') or d.get('model_name') or '?'
+    params   = d.get('parameters') or d.get('properties') or {}
+    max_seq  = params.get('max_seq_len') or params.get('context_length')
+    parts=[f'model={model_id}']
+    if max_seq is not None:
+        parts.append(f'ctx={max_seq}')
+    print(' '.join(parts), end='')
 except Exception:
     pass
 " 2>/dev/null
@@ -224,8 +233,7 @@ try:
     with urllib.request.urlopen('http://127.0.0.1:5900/health', timeout=2) as r:
         d = json.loads(r.read())
     up = d.get('uptime_s')
-    if up is not None:
-        print(f'uptime={up}s', end='')
+    print(f'uptime={up}s' if up is not None else 'status=ok', end='')
 except Exception:
     pass
 " 2>/dev/null
@@ -410,10 +418,13 @@ Stop order:   agent → telemetry → qdrant → tts → stt → llm → livekit
 Note: qdrant (memory backbone) must start before agent.
 
 Status detail (inline per service):
-  stt    — active model name (reflects hot-reload)
-  tts    — engine mode / router phase
-  qdrant — collection names + vector counts
-  agent  — session_active / persona / voice_mode / room / mem=on|off / token_count
+  livekit   — bind / websocket target
+  llm       — loaded model id + context ceiling
+  stt       — active model name (reflects hot-reload)
+  tts       — engine mode / router phase / worker/inflight
+  qdrant    — collection count + vector counts
+  telemetry — uptime
+  agent     — session_active / persona / voice_mode / room / mem=on|off / token_count
 
 ═══════════════════════════════════════════════════════════
   WHAT LIVES HERE vs ELSEWHERE

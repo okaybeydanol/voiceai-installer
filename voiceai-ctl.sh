@@ -186,6 +186,51 @@ except Exception:
 " 2>/dev/null
 }
 
+_livekit_detail() {
+  python3 -c "
+import os
+root = os.environ.get('VOICEAI_ROOT', os.path.expanduser('~/ai-projects/voiceai'))
+lan = os.path.join(root, 'config', 'lan_ip.txt')
+if os.path.isfile(lan):
+    ip = open(lan, 'r', encoding='utf-8').read().strip()
+    print(f'ws={ip}:7880', end='')
+else:
+    print('ws=127.0.0.1:7880', end='')
+" 2>/dev/null
+}
+
+_llm_detail() {
+  python3 -c "
+import json, urllib.request
+try:
+    with urllib.request.urlopen('http://127.0.0.1:5000/v1/model', timeout=2) as r:
+        d = json.loads(r.read())
+    model = d.get('id') or d.get('name') or d.get('model_name') or '?'
+    params = d.get('parameters') or d.get('properties') or {}
+    ctx = params.get('max_seq_len') or params.get('context_length')
+    if ctx is not None:
+        print(f'model={model} ctx={ctx}', end='')
+    else:
+        print(f'model={model}', end='')
+except Exception:
+    pass
+" 2>/dev/null
+}
+
+_telemetry_detail() {
+  python3 -c "
+import json, urllib.request
+try:
+    with urllib.request.urlopen('http://127.0.0.1:5900/health', timeout=2) as r:
+        d = json.loads(r.read())
+    up = d.get('uptime_s')
+    if up is not None:
+        print(f'uptime={up}s', end='')
+except Exception:
+    pass
+" 2>/dev/null
+}
+
 # ─── COMMANDS ─────────────────────────────────────────────────────────────────
 
 cmd_start() {
@@ -249,10 +294,13 @@ cmd_status() {
     http_st="$(_http_health "$svc" "$url")"
     detail=""
     case "$svc" in
-      tts)    [ "$http_st" = "ONLINE" ] && detail="$(_tts_detail)"    ;;
-      agent)  [ "$http_st" = "ONLINE" ] && detail="$(_agent_detail)"  ;;
-      stt)    [ "$http_st" = "ONLINE" ] && detail="$(_stt_detail)"    ;;
-      qdrant) [ "$http_st" = "ONLINE" ] && detail="$(_qdrant_detail)" ;;
+      livekit)   [ "$http_st" = "ONLINE" ] && detail="$(_livekit_detail)"   ;;
+      llm)       [ "$http_st" = "ONLINE" ] && detail="$(_llm_detail)"       ;;
+      stt)       [ "$http_st" = "ONLINE" ] && detail="$(_stt_detail)"       ;;
+      tts)       [ "$http_st" = "ONLINE" ] && detail="$(_tts_detail)"       ;;
+      qdrant)    [ "$http_st" = "ONLINE" ] && detail="$(_qdrant_detail)"    ;;
+      telemetry) [ "$http_st" = "ONLINE" ] && detail="$(_telemetry_detail)" ;;
+      agent)     [ "$http_st" = "ONLINE" ] && detail="$(_agent_detail)"     ;;
     esac
     printf "  %-12s  %-9s  %-9s  %s\n" "$svc" "$active" "$http_st" "$detail"
   done

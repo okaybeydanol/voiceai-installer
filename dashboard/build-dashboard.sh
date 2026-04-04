@@ -1465,13 +1465,13 @@ import { Mono } from "@/components/shared/Mono";
 import { POLL } from "@/lib/constants";
 import type { ServiceStatus } from "@/lib/types";
 
-interface ServiceDef {
-  key:   string;
+interface ServiceRowDef {
+  key: string;
   label: string;
-  port:  number;
+  port: number;
 }
 
-const SERVICES: ServiceDef[] = [
+const SERVICES: ServiceRowDef[] = [
   { key: "livekit",   label: "LiveKit",   port: 7880 },
   { key: "llm",       label: "LLM",       port: 5000 },
   { key: "stt",       label: "STT",       port: 5100 },
@@ -1481,14 +1481,14 @@ const SERVICES: ServiceDef[] = [
   { key: "agent",     label: "Agent",     port: 5800 },
 ];
 
-interface TelemetryServiceRow {
+interface TelemetryServiceEntry {
   online?: boolean;
   latency_ms?: number;
 }
 
 interface ServicesPayload {
   stale?: boolean;
-  services?: Record<string, TelemetryServiceRow>;
+  services?: Record<string, TelemetryServiceEntry>;
 }
 
 async function fetchServices(): Promise<ServicesPayload> {
@@ -1500,33 +1500,38 @@ async function fetchServices(): Promise<ServicesPayload> {
   return res.json();
 }
 
-function toStatus(row?: TelemetryServiceRow): ServiceStatus {
-  if (!row) return "unknown";
-  return row.online ? "online" : "offline";
+function mapStatus(entry?: TelemetryServiceEntry, stale?: boolean): ServiceStatus {
+  if (!entry) return "unknown";
+  if (stale) return entry.online ? "degraded" : "offline";
+  return entry.online ? "online" : "offline";
+}
+
+function ServiceChip({ svc, payload }: { svc: ServiceRowDef; payload: ServicesPayload | null }) {
+  const entry = payload?.services?.[svc.key];
+  const status = mapStatus(entry, payload?.stale);
+
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-black/15 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <StatusDot status={status} />
+        <span className="text-xs font-medium text-slate-300">{svc.label}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        {entry?.latency_ms != null && <Mono dim>{Math.round(entry.latency_ms)}ms</Mono>}
+        <Mono dim>{svc.port}</Mono>
+      </div>
+    </div>
+  );
 }
 
 export function ServiceGrid() {
-  const { data, loading } = usePoll<ServicesPayload>(fetchServices, POLL.NORMAL);
-  const svcMap = data?.services ?? {};
+  const { data } = usePoll<ServicesPayload>(fetchServices, POLL.NORMAL);
 
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-      {SERVICES.map((svc) => {
-        const row = svcMap[svc.key];
-        const status: ServiceStatus = loading ? "unknown" : toStatus(row);
-        return (
-          <div key={svc.key} className="flex items-center justify-between rounded-lg border border-white/[0.05] bg-black/15 px-3 py-2.5">
-            <div className="flex items-center gap-2">
-              <StatusDot status={status} />
-              <span className="text-xs font-medium text-slate-300">{svc.label}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              {row?.latency_ms != null && <Mono dim>{Math.round(row.latency_ms)}ms</Mono>}
-              <Mono dim>{svc.port}</Mono>
-            </div>
-          </div>
-        );
-      })}
+      {SERVICES.map((svc) => (
+        <ServiceChip key={svc.key} svc={svc} payload={data} />
+      ))}
     </div>
   );
 }

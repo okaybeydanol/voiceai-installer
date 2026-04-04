@@ -184,7 +184,7 @@ PYEOF
 cat > "$TELEM_COL/services.py" <<'PYEOF'
 """Service health polling. Truthful pass-through only."""
 from __future__ import annotations
-import asyncio, logging, time
+import asyncio, logging, time, socket
 from typing import Any
 import httpx
 log = logging.getLogger("voiceai.telemetry.services")
@@ -200,36 +200,32 @@ _SERVICES: dict[str, "str | None"] = {
 }
 _T = httpx.Timeout(connect=1.5, read=2.0, write=2.0, pool=2.0)
 
+def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 async def collect_all(client: httpx.AsyncClient) -> dict[str, Any]:
     tasks = {n: asyncio.create_task(_poll(n, u, client)) for n, u in _SERVICES.items()}
     return {n: await t for n, t in tasks.items()}
 
-async def _tcp_open(host: str, port: int) -> bool:
-    try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
 async def _poll(name: str, url: "str | None", client: httpx.AsyncClient) -> dict[str, Any]:
-    if url is None: return {"online": False, "note": "No health endpoint."}
+    if url is None: return {"online": False, "note": "No HTTP health endpoint."}
     t0 = time.perf_counter()
     try:
         if url.startswith("tcp://"):
-            hp = url[len("tcp://"):]
-            host, port_s = hp.rsplit(":", 1)
-            ok = await _tcp_open(host, int(port_s))
+            hp = url[len("tcp://"): ]
+            host, port = hp.rsplit(":", 1)
+            ok = _tcp_open(host, int(port), timeout=2.0)
             return {"online": ok, "latency_ms": round((time.perf_counter() - t0) * 1000, 1)}
+
         r = await client.get(url, timeout=_T)
         ms = round((time.perf_counter() - t0) * 1000, 1)
         try: body = r.json()
-        except Exception: body = {}
-        res: dict[str, Any] = {"online": r.status_code in (200, 204), "latency_ms": ms}
+        except: body = {}
+        res: dict = {"online": r.status_code in (200, 204), "latency_ms": ms}
         if res["online"] and body: res["data"] = body
         return res
     except (httpx.ConnectError, httpx.TimeoutException):
@@ -751,18 +747,9 @@ def _perm600(path, label):
 
 def _health(url, label):
     try:
-        if url.startswith("tcp://"):
-            import socket
-            hp = url[len("tcp://"):]
-            host, port_s = hp.rsplit(":", 1)
-            with socket.create_connection((host, int(port_s)), timeout=3):
-                pass
-            _p(f"{label} responding (tcp open)")
-            return
         with urllib.request.urlopen(url, timeout=3) as r:
             _p(f"{label} responding ({r.status})")
-    except Exception:
-        _w(f"{label} not responding ({url})")
+    except Exception: _w(f"{label} not responding ({url})")
 
 CANONICAL_STT = {"faster-whisper-tiny", "faster-whisper-tiny.en", "faster-whisper-base",
                  "faster-whisper-base.en", "faster-whisper-small", "faster-whisper-small.en",

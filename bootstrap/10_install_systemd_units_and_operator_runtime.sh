@@ -106,7 +106,7 @@ StartLimitBurst=10
 Type=simple
 EnvironmentFile=%h/.config/voiceai/env.conf
 ExecStartPre=/bin/bash %h/ai-projects/voiceai/bin/wait-healthy.sh \
-  http://127.0.0.1:${PORT_LIVEKIT}/health \
+  tcp://127.0.0.1:${PORT_LIVEKIT} \
   http://127.0.0.1:${PORT_LLM}/v1/models \
   http://127.0.0.1:${PORT_STT}/health \
   http://127.0.0.1:${PORT_TTS_ROUTER}/health \
@@ -139,23 +139,75 @@ _banner "10 / OPERATOR RUNTIME — wait-healthy.sh"
 
 cat > "$ROOT/bin/wait-healthy.sh" <<'SCRIPT'
 #!/usr/bin/env bash
-# wait-healthy.sh — poll a list of HTTP health URLs until all respond 200.
-# Usage: wait-healthy.sh <url> [<url> ...] [--timeout <seconds>]
+# wait-healthy.sh — poll readiness checks until all pass.
+# Supported:
+#   http://...   -> HTTP 2xx
+#   tcp://h:p    -> TCP connect
+# Special case:
+#   LLM /v1/models is probed with Authorization: Bearer local
 set -euo pipefail
-TIMEOUT=600; URLS=()
+
+TIMEOUT=600
+URLS=()
+
+_tcp_open() {
+  local host="$1" port="$2"
+  python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+host = sys.argv[1]
+port = int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(2.0)
+try:
+    s.connect((host, port))
+    raise SystemExit(0)
+except Exception:
+    raise SystemExit(1)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+PY
+}
+
+_probe_one() {
+  local u="$1"
+
+  if [[ "$u" == tcp://* ]]; then
+    local hp host port
+    hp="${u#tcp://}"
+    host="${hp%%:*}"
+    port="${hp##*:}"
+    _tcp_open "$host" "$port"
+    return
+  fi
+
+  if [[ "$u" == "http://127.0.0.1:"*"/v1/models" ]]; then
+    curl -fsS --max-time 3 \
+      -H 'Authorization: Bearer local' \
+      "$u" >/dev/null 2>&1
+    return
+  fi
+
+  curl -fsS --max-time 3 "$u" >/dev/null 2>&1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --timeout) TIMEOUT="$2"; shift 2 ;;
     *)         URLS+=("$1"); shift   ;;
   esac
 done
+
 [ "${#URLS[@]}" -eq 0 ] && exit 0
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
+
 echo "[WAIT] ${#URLS[@]} service(s)  timeout=${TIMEOUT}s"
 while true; do
   ALL=1
   for u in "${URLS[@]}"; do
-    curl -fsS --max-time 3 "$u" >/dev/null 2>&1 || { ALL=0; break; }
+    _probe_one "$u" || { ALL=0; break; }
   done
   [ "$ALL" -eq 1 ] && { echo "[WAIT] All healthy."; exit 0; }
   [ "$(date +%s)" -ge "$DEADLINE" ] && { echo "[WAIT] TIMEOUT" >&2; exit 1; }

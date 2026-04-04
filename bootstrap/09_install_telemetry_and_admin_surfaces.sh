@@ -769,7 +769,7 @@ if lk_yaml.is_file(): _perm600(lk_yaml, "livekit.yaml")
 else: _f("livekit.yaml missing")
 
 _s("Qdrant (v4 memory backbone)")
-qdrant_bin = ROOT / "memory" / "qdrant"
+qdrant_bin = ROOT / "bin" / "qdrant"
 if qdrant_bin.is_file(): _p("qdrant binary present")
 else: _f("qdrant binary missing")
 qdrant_cfg = ROOT / "memory" / "config.yaml"

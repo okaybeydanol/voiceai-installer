@@ -51,7 +51,7 @@ if [ ! -f "$AGENT_DEPS_MARKER" ]; then
   . "$AGENT_DIR/venv/bin/activate"
   # v4: added qdrant-client[fastembed] for memory + beautifulsoup4 for safe web fetch
   uv pip install -U \
-    "livekit-agents>=0.12.0,<0.13.0" livekit-plugins-openai livekit-plugins-silero \
+    "livekit-agents==1.5.1" "livekit-plugins-openai==1.5.1" "livekit-plugins-silero==1.5.1" \
     httpx numpy soundfile pyyaml python-dotenv \
     "qdrant-client[fastembed]>=1.9.0" "beautifulsoup4>=4.12"
   deactivate
@@ -113,7 +113,7 @@ LLM_MODEL     = os.environ.get("LLM_MODEL",       "Qwen3.5-35B-A3B-EXL3")
 STT_MODEL     = os.environ.get("STT_MODEL",        "faster-whisper-medium")
 STT_LANGUAGE  = os.environ.get("STT_LANGUAGE",    "")
 
-DEFAULT_PERSONA    = os.environ.get("DEFAULT_PERSONA",    "default")
+DEFAULT_PERSONA    = os.environ.get("DEFAULT_PERSONA",    "english_teacher")
 AGENT_ADMIN_PORT   = int(os.environ.get("AGENT_ADMIN_PORT", "5800"))
 
 # Memory (v4)
@@ -132,9 +132,9 @@ from typing import Optional
 
 @dataclasses.dataclass
 class VoiceState:
-    persona:    str = "default"
-    voice:      str = "Ryan"
-    language:   str = "en"
+    persona:    str = "english_teacher"
+    voice:      str = "Aiden"
+    language:   str = "English"
     instruct:   str = ""
     interruption_mode: str = "balanced"
 
@@ -157,8 +157,8 @@ _HOST = "127.0.0.1"
 _PORT = int(os.environ.get("AGENT_ADMIN_PORT", "5800"))
 _state: dict[str, Any] = {
     "start_time": time.time(), "session_active": False, "room_name": None,
-    "persona": "default", "voice_mode": "voicedesign", "voice_speaker": "Ryan",
-    "voice_language": "en", "session_tokens": None,
+    "persona": "english_teacher", "voice_mode": "customvoice", "voice_speaker": "Aiden",
+    "voice_language": "English", "session_tokens": None,
     "memory_enabled": True, "last_checkpoint": None, "last_error": None,
 }
 
@@ -605,7 +605,7 @@ if [ ! -f "$AGENT_ENV" ]; then
       printf 'LLM_MODEL=Qwen3.5-35B-A3B-EXL3\n'
       printf 'STT_MODEL=%s\n'               "$STT_DEFAULT_MODEL"
       printf 'STT_LANGUAGE=\n'
-      printf 'DEFAULT_PERSONA=default\n'
+      printf 'DEFAULT_PERSONA=english_teacher\n'
       printf 'AGENT_ADMIN_PORT=%d\n'        "$PORT_AGENT_ADMIN"
       printf 'QDRANT_URL=http://127.0.0.1:%d\n' "$PORT_QDRANT_REST"
       printf 'VOICEAI_MEMORY=true\n'
@@ -631,7 +631,7 @@ set -a
 . "$AGENT_DIR/.env"
 set +a
 cd "$AGENT_DIR"
-echo "[AGENT] Starting  persona=${DEFAULT_PERSONA:-default}  memory=${VOICEAI_MEMORY:-true}"
+echo "[AGENT] Starting  persona=${DEFAULT_PERSONA:-english_teacher}  memory=${VOICEAI_MEMORY:-true}"
 exec "$AGENT_DIR/venv/bin/python" -m src.main start
 SCRIPT
 chmod +x "$ROOT/bin/start-agent.sh"

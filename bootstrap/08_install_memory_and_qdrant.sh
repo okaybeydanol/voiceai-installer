@@ -24,7 +24,7 @@ PORT_QDRANT_REST="${PORT_QDRANT_REST:-6333}"
 PORT_QDRANT_GRPC="${PORT_QDRANT_GRPC:-6334}"
 
 QDRANT_DIR="$ROOT/memory"
-QDRANT_BIN="$QDRANT_DIR/qdrant"
+QDRANT_BIN="$ROOT/bin/qdrant"
 QDRANT_DATA="$ROOT/memory/qdrant"
 QDRANT_CFG="$QDRANT_DIR/config.yaml"
 
@@ -48,6 +48,7 @@ if [ "$NEEDS_QDRANT_DL" = true ]; then
   wget -q --show-progress "$QD_URL" -O "$QDRANT_DIR/qdrant.tar.gz"
   tar -xzf "$QDRANT_DIR/qdrant.tar.gz" -C "$QDRANT_DIR" qdrant
   rm -f "$QDRANT_DIR/qdrant.tar.gz"
+  mv "$QDRANT_DIR/qdrant" "$QDRANT_BIN"
   chmod +x "$QDRANT_BIN"
   _ok "qdrant v$QDRANT_VERSION downloaded"
 fi
@@ -84,7 +85,7 @@ set -euo pipefail
 . "$HOME/.config/voiceai/env.sh"
 cd "$VOICEAI_ROOT/memory"
 echo "[QDRANT] Starting on 127.0.0.1:6333 …"
-exec ./qdrant --config-path ./config.yaml
+exec "$VOICEAI_ROOT/bin/qdrant" --config-path ./config.yaml
 SCRIPT
 chmod +x "$ROOT/bin/start-qdrant.sh"
 _ok "bin/start-qdrant.sh written"

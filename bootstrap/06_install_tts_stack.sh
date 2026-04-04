@@ -53,12 +53,12 @@ if [ ! -f "$QWEN_DEPS_MARKER" ]; then
   uv venv "$REPOS_DIR/qwen3-17b/.venv" -p 3.12
   # shellcheck source=/dev/null
   . "$REPOS_DIR/qwen3-17b/.venv/bin/activate"
-  pip install --upgrade pip setuptools wheel
+  uv pip install --upgrade pip setuptools wheel
   uv pip install packaging psutil ninja soundfile
-  uv pip install torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121
-  MAX_JOBS="$SAFE_JOBS" pip install flash-attn --no-build-isolation
-  uv pip install -e . --no-deps
+  uv pip install "torch==2.7.0" "torchvision==0.22.0" "torchaudio==2.7.0" \
+    --index-url https://download.pytorch.org/whl/cu128
+  MAX_JOBS="$SAFE_JOBS" uv pip install flash-attn --no-build-isolation
+  uv pip install -e "$REPOS_DIR/qwen3-17b" --no-deps
   uv pip install "transformers==4.57.3" "accelerate==1.12.0" \
     librosa soundfile sox onnxruntime einops fastapi "uvicorn[standard]"
   deactivate; touch "$QWEN_DEPS_MARKER"; _ok "Qwen3-TTS deps installed"
@@ -75,9 +75,9 @@ if [ ! -f "$CHATTERBOX_DEPS_MARKER" ]; then
   uv venv "$REPOS_DIR/chatterbox/.venv" -p 3.11
   # shellcheck source=/dev/null
   . "$REPOS_DIR/chatterbox/.venv/bin/activate"
-  pip install torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121
-  pip install -e .
+  uv pip install "torch==2.7.0" "torchvision==0.22.0" "torchaudio==2.7.0" \
+    --index-url https://download.pytorch.org/whl/cu128
+  uv pip install -e "$REPOS_DIR/chatterbox"
   uv pip install soundfile fastapi "uvicorn[standard]"
   deactivate; touch "$CHATTERBOX_DEPS_MARKER"; _ok "Chatterbox deps installed"
 else _skip "Chatterbox deps"; fi
@@ -684,8 +684,8 @@ def set_engine(e) -> None: global _engine; _engine = e
 
 class SpeechReq(BaseModel):
     input:           str
-    voice:           str   = "Ryan"
-    language:        str   = "en"
+    voice:           str   = "Aiden"
+    language:        str   = "English"
     language_id:     str   = ""
     instruct:        str   = ""
     response_format: Literal["wav"] = "wav"
@@ -765,7 +765,7 @@ cat > "$ROOT/bin/start-tts.sh" <<'SCRIPT'
 set -euo pipefail
 # shellcheck source=/dev/null
 . "$HOME/.config/voiceai/env.sh"
-MODE="${1:-voicedesign}"; export TTS_MODE="$MODE"
+MODE="${1:-customvoice}"; export TTS_MODE="$MODE"
 cd "$VOICEAI_ROOT/tts/router"
 # shellcheck source=/dev/null
 . "$VOICEAI_ROOT/tts/repos/router/.venv/bin/activate"

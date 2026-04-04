@@ -62,12 +62,11 @@ fi
 # ==============================================================================
 _banner "04 / LLM — TabbyAPI config"
 
-if [ -f "$TABBY_DIR/config.yml" ]; then
-  _skip "TabbyAPI config.yml"
-else
-  cat > "$TABBY_DIR/config.yml" <<CFG
-host: 127.0.0.1
-port: ${PORT_LLM}
+cat > "$TABBY_DIR/config.yml" <<CFG
+network:
+  host: 127.0.0.1
+  port: ${PORT_LLM}
+  disable_auth: true
 model:
   model_dir: "${ROOT}/models/llm"
   model_name: "Qwen3.5-35B-A3B-EXL3"
@@ -77,8 +76,7 @@ logging:
   prompt: false
   generation_params: false
 CFG
-  _ok "TabbyAPI config.yml written"
-fi
+_ok "TabbyAPI config.yml written (canonical network.disable_auth=true)"
 
 cat > "$ROOT/bin/start-llm.sh" <<'SCRIPT'
 #!/usr/bin/env bash

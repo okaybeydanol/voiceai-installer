@@ -121,6 +121,17 @@ class TranscriptionResult:
     duration: Optional[float]; duration_after_vad: Optional[float]
     segments: list[dict]; pronunciation_warnings: list[str]
 
+MODEL_ALIASES = {
+    "faster-whisper-tiny": "tiny",
+    "faster-whisper-tiny.en": "tiny.en",
+    "faster-whisper-base": "base",
+    "faster-whisper-base.en": "base.en",
+    "faster-whisper-small": "small",
+    "faster-whisper-small.en": "small.en",
+    "faster-whisper-medium": "medium",
+    "faster-whisper-medium.en": "medium.en",
+}
+
 class Transcriber:
     def __init__(self, model, cfg: dict):
         self._model = model; self._cfg = cfg
@@ -129,8 +140,9 @@ class Transcriber:
     def from_config(cls, cfg: dict) -> "Transcriber":
         from faster_whisper import WhisperModel
         mc = cfg["model"]
+        native_model = MODEL_ALIASES.get(mc["model_name"], mc["model_name"])
         m = WhisperModel(
-            mc["model_name"],
+            native_model,
             device=mc.get("device", "cpu"),
             compute_type=mc.get("compute_type", "int8"),
             num_workers=mc.get("num_workers", 2),
@@ -138,7 +150,7 @@ class Transcriber:
             download_root=mc.get("model_dir"),
         )
         log.info("[TRANSCRIBER] Built: %s  workers=%s  threads=%s",
-                 mc["model_name"], mc.get("num_workers", 2), mc.get("cpu_threads", 8))
+                 native_model, mc.get("num_workers", 2), mc.get("cpu_threads", 8))
         return cls(m, cfg)
 
     def transcribe(self, audio: np.ndarray, language: Optional[str] = None,

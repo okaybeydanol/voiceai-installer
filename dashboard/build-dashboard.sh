@@ -808,15 +808,43 @@ export const POLL = {
 
 export const LIVEKIT_ROOM = "voice-room" as const;
 
-export const LANGUAGES = [
-  { value: "en", label: "English"  },
-  { value: "tr", label: "Turkish"  },
-  { value: "de", label: "German"   },
-  { value: "fr", label: "French"   },
-  { value: "es", label: "Spanish"  },
-  { value: "ja", label: "Japanese" },
-  { value: "zh", label: "Chinese"  },
-  { value: "ko", label: "Korean"   },
+export const LANGUAGES_OTHER = [
+  { value: "Chinese",    label: "Chinese"    },
+  { value: "English",    label: "English"    },
+  { value: "Japanese",   label: "Japanese"   },
+  { value: "Korean",     label: "Korean"     },
+  { value: "German",     label: "German"     },
+  { value: "French",     label: "French"     },
+  { value: "Russian",    label: "Russian"    },
+  { value: "Portuguese", label: "Portuguese" },
+  { value: "Spanish",    label: "Spanish"    },
+  { value: "Italian",    label: "Italian"    },
+] as const;
+
+export const LANGUAGES_CHATTERBOX = [
+  { value: "ar", label: "Arabic"     },
+  { value: "da", label: "Danish"     },
+  { value: "de", label: "German"     },
+  { value: "el", label: "Greek"      },
+  { value: "en", label: "English"    },
+  { value: "es", label: "Spanish"    },
+  { value: "fi", label: "Finnish"    },
+  { value: "fr", label: "French"     },
+  { value: "he", label: "Hebrew"     },
+  { value: "hi", label: "Hindi"      },
+  { value: "it", label: "Italian"    },
+  { value: "ja", label: "Japanese"   },
+  { value: "ko", label: "Korean"     },
+  { value: "ms", label: "Malay"      },
+  { value: "nl", label: "Dutch"      },
+  { value: "no", label: "Norwegian"  },
+  { value: "pl", label: "Polish"     },
+  { value: "pt", label: "Portuguese" },
+  { value: "ru", label: "Russian"    },
+  { value: "sv", label: "Swedish"    },
+  { value: "sw", label: "Swahili"    },
+  { value: "tr", label: "Turkish"    },
+  { value: "zh", label: "Chinese"    },
 ] as const;
 
 export const INTERRUPTION_MODES = [
@@ -2542,7 +2570,7 @@ EOF
 cat > components/session/VoiceControls.tsx << 'EOF'
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRoomContext, useRemoteParticipants } from "@livekit/components-react";
 import { ParticipantKind } from "livekit-client";
 import { usePersonaInventory } from "@/hooks/useInventory";
@@ -2552,7 +2580,8 @@ import { SectionHeader } from "@/components/shared/SectionHeader";
 import { InlineAlert }   from "@/components/shared/InlineAlert";
 import { Mono }          from "@/components/shared/Mono";
 import { Users, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
-import { LANGUAGES, INTERRUPTION_MODES } from "@/lib/constants";
+import { LANGUAGES_CHATTERBOX, LANGUAGES_OTHER, INTERRUPTION_MODES } from "@/lib/constants";
+import { useTtsState } from "@/hooks/useTtsState";
 import { cn } from "@/lib/utils";
 
 interface RpcResult {
@@ -2607,15 +2636,28 @@ function SelectField({ label, value, onChange, options }: SelectFieldProps) {
 export function VoiceControls() {
   const { call, agentReady } = useAgentRpc();
   const personas              = usePersonaInventory();
+  const tts                   = useTtsState();
 
-  const [persona,     setPersona]     = useState("");
-  const [voice,       setVoice]       = useState("");
-  const [language,    setLanguage]    = useState("en");
+  const [persona,     setPersona]     = useState("english_teacher");
+  const [voice,       setVoice]       = useState("Aiden");
+  const [language,    setLanguage]    = useState("English");
   const [instruct,    setInstruct]    = useState("");
   const [interrupt,   setInterrupt]   = useState("normal");
   const [busy,        setBusy]        = useState(false);
   const [result,      setResult]      = useState<RpcResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+
+  const activeTtsMode = tts.data?.active_mode ?? "customvoice";
+  const languageOptions = useMemo(
+    () => (activeTtsMode === "chatterbox" ? LANGUAGES_CHATTERBOX : LANGUAGES_OTHER),
+    [activeTtsMode],
+  );
+
+  useEffect(() => {
+    if (!languageOptions.some((l) => l.value === language)) {
+      setLanguage(languageOptions[0]?.value ?? "");
+    }
+  }, [language, languageOptions]);
 
   async function rpc(method: string, payload: Record<string, unknown>) {
     if (busy) return;
@@ -2726,7 +2768,7 @@ export function VoiceControls() {
           label="Language"
           value={language}
           onChange={setLanguage}
-          options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
+          options={languageOptions.map((l) => ({ value: l.value, label: l.label }))}
         />
         <div className="space-y-1">
           <Mono dim>Style instruction (optional)</Mono>

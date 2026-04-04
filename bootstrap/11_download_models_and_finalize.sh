@@ -53,7 +53,8 @@ _download_model() {
   local label="$1" repo="$2" target="$3" revision="${4:-}"
   _dir_has_files "$target" && { _skip "Model '$label'"; return 0; }
   _step "Downloading: $label"
-  HF_XET_HIGH_PERFORMANCE=1 uv run --with "huggingface_hub[hf_transfer]" \
+  HF_XET_HIGH_PERFORMANCE=1 \
+  uv run --with "huggingface_hub>=1.0.0" --with hf_xet \
     python "$DOWNLOADER" "$repo" "$target" $revision
   _ok "$label downloaded"
 }
@@ -150,6 +151,7 @@ for f in \
     "$ROOT/shells/bootstrap-corrections.sh" \
     "$_PROJ_ROOT/voiceai-backbone-remediation.sh" \
     "$ROOT/voiceai-backbone-remediation.sh"; do
+  [ -e "$f" ] || continue
   FABS="$(realpath "$f" 2>/dev/null)" || continue
   # Never archive bootstrap/ stage scripts themselves
   [[ "$FABS" == "$BOOTSTRAP_DIR"/* ]] && continue
@@ -258,7 +260,7 @@ except ImportError: print('  Agent OK (qdrant-client absent — memory disabled)
 ) || _warn "Telemetry venv test failed"
 
 _step "Qdrant smoke test"
-if "$ROOT/memory/qdrant" --version >/dev/null 2>&1; then
+if "$ROOT/bin/qdrant" --version >/dev/null 2>&1; then
   _ok "qdrant binary responds to --version"
   if curl -fsS --max-time 3 "http://127.0.0.1:${PORT_QDRANT_REST}/" >/dev/null 2>&1; then
     _ok "Qdrant REST API responding (already running)"
@@ -283,14 +285,6 @@ echo "  STT model    : $STT_DEFAULT_MODEL (tiny,base,small,medium + .en)"
 echo "  STT tuning   : num_workers=2  cpu_threads=8 (24C/192GB)"
 echo "  Qdrant       : 127.0.0.1:${PORT_QDRANT_REST} (memory backbone)"
 echo "  Embedding    : $EMBEDDING_MODEL (dim=$EMBEDDING_DIM, CPU, cached)"
-echo
-echo "  v4 changes:"
-echo "    Ph-1   Archive truthful; reference-audio directory-driven"
-echo "    Ph-5   Session RPC: set_session_voice ONLY (voice/language/instruct)"
-echo "           Engine params (temperature/cfg/exag) = admin-only"
-echo "    Ph-8   Qdrant 3-tier memory backbone installed"
-echo "    Ph-9   Memory RPC: set_memory_enabled / checkpoint / restore / search"
-echo "    Ph-10  Safe web fetch tool (explicit user request, no auto-Qdrant)"
 echo
 echo "  Service ports (all loopback by default):"
 printf "    %-14s 127.0.0.1:%d\n" "LLM"         "$PORT_LLM"
@@ -336,12 +330,11 @@ echo
 echo "  TTS engine field truth table:"
 echo "    CustomVoice : voice=named-speaker  language=YES  instruct=accepted (optional)"
 echo "    VoiceDesign : voice=ignored        language=YES  instruct=meaningful"
-echo "    Chatterbox  : voice→inputs/<stem>.wav  language=passthrough  ref-audio=cloning"
-echo "    (No engine has fake 'speed'. response_format is locked to 'wav'.)"
+echo "    Chatterbox  : voice→inputs/<stem>.wav  language_id=YES  ref-audio=cloning"
 echo
 echo "  Session control — VOICE-DRIVEN (narrow policy, 3 RPCs only):"
 echo "    RPC set_persona               {\"name\": \"english_teacher\"}"
-echo "    RPC set_session_voice         {\"voice\": \"myref\", \"language\": \"en\", \"instruct\": \"calm\"}"
+echo "    RPC set_session_voice         {\"voice\": \"Aiden\", \"language\": \"English\", \"instruct\": \"\"}"
 echo "    RPC set_interruption_behavior {\"mode\": \"patient\"}"
 echo
 echo "  Memory control — EXPLICIT CONTROL-PLANE ONLY (frontend button / admin):"

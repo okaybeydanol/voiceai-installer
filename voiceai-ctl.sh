@@ -37,7 +37,7 @@ declare -A UNIT=(
 
 # Qdrant REST endpoint returns 200 on its root path.
 declare -A HEALTH_URL=(
-  [livekit]="http://127.0.0.1:7880/health"
+  [livekit]="tcp://127.0.0.1:7880"
   [llm]="http://127.0.0.1:5000/v1/models"
   [stt]="http://127.0.0.1:5100/health"
   [tts]="http://127.0.0.1:5200/health"
@@ -77,9 +77,47 @@ _resolve_names() {
 _unit()       { echo "${UNIT[$1]}"; }
 _health_url() { echo "${HEALTH_URL[$1]:-}"; }
 
+_tcp_open() {
+  local host="$1" port="$2"
+  python3 - "$host" "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+host = sys.argv[1]
+port = int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.settimeout(2.0)
+try:
+    s.connect((host, port))
+    raise SystemExit(0)
+except Exception:
+    raise SystemExit(1)
+finally:
+    try:
+        s.close()
+    except Exception:
+        pass
+PY
+}
+
 _http_health() {
-  local url="$1"
+  local svc="$1" url="$2"
   [ -z "$url" ] && echo "—" && return
+
+  if [[ "$url" == tcp://* ]]; then
+    local hp host port
+    hp="${url#tcp://}"
+    host="${hp%%:*}"
+    port="${hp##*:}"
+    _tcp_open "$host" "$port" && echo "ONLINE" || echo "offline"
+    return
+  fi
+
+  if [ "$svc" = "llm" ]; then
+    curl -fsS --max-time 2 \
+      -H 'Authorization: Bearer local' \
+      "$url" >/dev/null 2>&1 && echo "ONLINE" || echo "offline"
+    return
+  fi
+
   curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && echo "ONLINE" || echo "offline"
 }
 
@@ -208,7 +246,7 @@ cmd_status() {
     unit="$(_unit "$svc")"
     active="$(systemctl --user is-active "$unit" 2>/dev/null || echo "inactive")"
     url="$(_health_url "$svc")"
-    http_st="$(_http_health "$url")"
+    http_st="$(_http_health "$svc" "$url")"
     detail=""
     case "$svc" in
       tts)    [ "$http_st" = "ONLINE" ] && detail="$(_tts_detail)"    ;;
@@ -260,7 +298,7 @@ cmd_logs() {
     exit 1
   fi
   _require_systemd
-  shift 2>/dev/null || true
+  shift 2 || true
   unit="$(_unit "$target")"
   exec journalctl --user-unit "$unit" --no-hostname -o short-monotonic "$@"
 }
@@ -273,9 +311,12 @@ cmd_health() {
   for svc in "${START_ORDER[@]}"; do
     url="$(_health_url "$svc")"
     printf "  %-12s  " "$svc"
-    if [ -z "$url" ]; then echo "— (no HTTP endpoint)"
-    elif curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then echo "ONLINE"
-    else echo "offline  ($url)"; fi
+    if [ -z "$url" ]; then
+      echo "— (no endpoint)"
+    else
+      st="$(_http_health "$svc" "$url")"
+      [ "$st" = "ONLINE" ] && echo "ONLINE" || echo "offline  ($url)"
+    fi
   done
   echo
 }
@@ -290,7 +331,7 @@ cmd_validate() {
 
 # ─── DISPATCH ─────────────────────────────────────────────────────────────────
 CMD="${1:-status}"
-shift 2>/dev/null || true
+shift || true
 
 case "$CMD" in
   start)    cmd_start   "${1:-all}" ;;
@@ -352,7 +393,7 @@ Telemetry API (read-only, 127.0.0.1:5900):
 
 Session voice control (LiveKit RPC — narrow policy):
   set_persona              {"name": "english_teacher"}
-  set_session_voice        {"voice": "myref", "language": "en", "instruct": "calm"}
+  set_session_voice        {"voice": "Aiden", "language": "English", "instruct": ""}
   set_interruption_behavior {"mode": "patient"}
 
   Policy: ONLY persona / voice+language+instruct / interruption are voice-accessible.

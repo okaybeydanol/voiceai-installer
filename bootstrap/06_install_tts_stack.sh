@@ -612,9 +612,9 @@ class ChatterboxEngine(TTSEngine):
         import torch
         if not CHATTERBOX_DIR.is_dir():
             raise RuntimeError(f"Chatterbox model dir not found: {CHATTERBOX_DIR}")
-        from chatterbox.tts import ChatterboxTTS
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model = ChatterboxTTS.from_pretrained(str(CHATTERBOX_DIR), device=device)
+        self._model = ChatterboxMultilingualTTS.from_local(CHATTERBOX_DIR, device=device)
         self._sr = getattr(self._model, "sr", 24000)
         log.info("[CHATTERBOX] Ready. device=%s  voices=%d", device, len(list_available_voices()))
 
@@ -622,8 +622,10 @@ class ChatterboxEngine(TTSEngine):
         ref = _find_ref(req.voice)
         if req.voice and not ref:
             log.warning("[CHATTERBOX] No reference audio for voice '%s'", req.voice)
+        language_id = (req.language_id or req.language or "en").strip().lower()
         wav = self._model.generate(
             req.input,
+            language_id=language_id,
             audio_prompt_path=str(ref) if ref else None,
             temperature=req.temperature,
             cfg_weight=req.cfg_weight,

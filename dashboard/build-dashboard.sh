@@ -41,6 +41,7 @@ mkdir -p "$APP_NAME" && cd "$APP_NAME"
 
 mkdir -p \
   app/api/livekit/token \
+  app/api/livekit/dispatch \
   app/api/tts/switch \
   app/api/stt/switch \
   app/api/tools/webfetch \
@@ -219,6 +220,7 @@ LIVEKIT_URL=${LIVEKIT_URL}
 LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
 LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
 VOICEAI_ROOT=${VOICEAI_ROOT}
+VOICEAI_AGENT_NAME=${VOICEAI_AGENT_NAME:-voiceai-agent}
 ENVEOF
 
 # ==============================================================================
@@ -320,23 +322,72 @@ export async function GET(): Promise<NextResponse> {
     );
   }
 
+  const roomName = `${LIVEKIT_ROOM}-${Date.now()}`;
   const identity = `dashboard-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const at = new AccessToken(livekitApiKey, livekitApiSecret, { identity, ttl: "4h" });
   at.addGrant({
     roomJoin:       true,
-    room:           LIVEKIT_ROOM,
+    room:           roomName,
     canPublish:     true,
     canSubscribe:   true,
     canPublishData: true,
   });
 
   const token = await at.toJwt();
-  return NextResponse.json({ token, url: livekitUrl });
+  return NextResponse.json({ token, url: livekitUrl, roomName, identity });
 }
 EOF
 
 # ==============================================================================
+# ==============================================================================
+# 13 · app/api/livekit/dispatch/route.ts — explicit agent dispatch
+# Creates a dispatch for the configured agent to join the requested room.
+# ==============================================================================
+cat > app/api/livekit/dispatch/route.ts << 'EOF'
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+import { NextRequest, NextResponse } from "next/server";
+import { AgentDispatchClient } from "livekit-server-sdk";
+import { serverConfig } from "@/server/config";
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, message: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { roomName, metadata } = body as { roomName?: string; metadata?: Record<string, unknown> };
+  if (!roomName || typeof roomName !== "string") {
+    return NextResponse.json({ ok: false, message: "roomName required" }, { status: 400 });
+  }
+
+  const { livekitHttpUrl, livekitApiKey, livekitApiSecret, voiceaiAgentName } = serverConfig;
+  if (!voiceaiAgentName) {
+    return NextResponse.json({ ok: false, message: "VOICEAI_AGENT_NAME is empty" }, { status: 500 });
+  }
+
+  try {
+    const client = new AgentDispatchClient(livekitHttpUrl, livekitApiKey, livekitApiSecret);
+    const created = await client.createDispatch(roomName, voiceaiAgentName, {
+      metadata: JSON.stringify(metadata ?? {}),
+    });
+
+    return NextResponse.json({
+      ok: true,
+      message: `Dispatched '${voiceaiAgentName}' to ${roomName}`,
+      dispatchId: created.id,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ ok: false, message: `Agent dispatch failed: ${message}` }, { status: 502 });
+  }
+}
+EOF
+
 # 13 · app/api/tts/switch/route.ts — global TTS engine switch
 # ==============================================================================
 cat > app/api/tts/switch/route.ts << 'EOF'
@@ -899,11 +950,21 @@ function env(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
 
+function toHttpUrl(raw: string): string {
+  if (raw.startsWith("ws://")) return `http://${raw.slice(5)}`;
+  if (raw.startsWith("wss://")) return `https://${raw.slice(6)}`;
+  return raw;
+}
+
+const livekitUrl = env("LIVEKIT_URL", "ws://127.0.0.1:7880");
+
 export const serverConfig = {
-  livekitUrl:       env("LIVEKIT_URL",       "ws://127.0.0.1:7880"),
-  livekitApiKey:    env("LIVEKIT_API_KEY",    ""),
+  livekitUrl,
+  livekitHttpUrl:   toHttpUrl(livekitUrl),
+  livekitApiKey:    env("LIVEKIT_API_KEY", ""),
   livekitApiSecret: env("LIVEKIT_API_SECRET", ""),
   voiceaiRoot:      env("VOICEAI_ROOT", `${process.env.HOME ?? ""}/ai-projects/voiceai`),
+  voiceaiAgentName: env("VOICEAI_AGENT_NAME", "voiceai-agent"),
 } as const;
 EOF
 
@@ -1453,8 +1514,9 @@ export function AppShell() {
 EOF
 
 # ==============================================================================
+# ==============================================================================
 # 39 · components/overview/ServiceHealthRow.tsx
-# Each service chip has its own usePoll call — failure is isolated per service.
+# Uses telemetry /metrics/services as the single source of truth.
 # ==============================================================================
 cat > components/overview/ServiceHealthRow.tsx << 'EOF'
 "use client";
@@ -2090,22 +2152,91 @@ EOF
 cat > components/session/MicButton.tsx << 'EOF'
 "use client";
 
-import { useState } from "react";
-import { useLocalParticipant } from "@livekit/components-react";
-import { Mic, MicOff } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocalParticipant, useRoomContext } from "@livekit/components-react";
+import { Mic, MicOff, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+interface AudioInput {
+  deviceId: string;
+  label: string;
+}
+
 export function MicButton() {
+  const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
+
   const [enabled, setEnabled] = useState(false);
-  const [busy,    setBusy]    = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [devices, setDevices] = useState<AudioInput[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+
+  async function refreshDevices() {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {
+      // Permission may already be denied; still try enumerateDevices.
+    }
+
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const inputs = all
+      .filter((d) => d.kind === "audioinput")
+      .map((d, idx) => ({
+        deviceId: d.deviceId,
+        label: d.label || `Microphone ${idx + 1}`,
+      }));
+
+    setDevices(inputs);
+    setSelectedDeviceId((prev) => prev || inputs[0]?.deviceId || "");
+  }
+
+  useEffect(() => {
+    refreshDevices().catch(console.error);
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    const md = navigator.mediaDevices;
+
+    if (!md?.addEventListener) return;
+    const onChange = () => { refreshDevices().catch(console.error); };
+    md.addEventListener("devicechange", onChange);
+    return () => md.removeEventListener("devicechange", onChange);
+  }, []);
+
+  const deviceLabel = useMemo(
+    () => devices.find((d) => d.deviceId === selectedDeviceId)?.label ?? "Default microphone",
+    [devices, selectedDeviceId],
+  );
+
+  async function enableWithSelectedDevice() {
+    const captureOptions = selectedDeviceId
+      ? ({ deviceId: { exact: selectedDeviceId } } as any)
+      : undefined;
+
+    if (selectedDeviceId) {
+      try {
+        await room.switchActiveDevice("audioinput", selectedDeviceId);
+      } catch {
+        // Ignore and let setMicrophoneEnabled try directly.
+      }
+    }
+
+    await localParticipant.setMicrophoneEnabled(true, captureOptions);
+  }
 
   async function toggle() {
     if (!localParticipant || busy) return;
     setBusy(true);
     try {
-      await localParticipant.setMicrophoneEnabled(!enabled);
-      setEnabled((v) => !v);
+      if (enabled) {
+        await localParticipant.setMicrophoneEnabled(false);
+        setEnabled(false);
+      } else {
+        await enableWithSelectedDevice();
+        setEnabled(true);
+      }
     } catch (err) {
       console.error("[MicButton]", err);
     } finally {
@@ -2113,20 +2244,70 @@ export function MicButton() {
     }
   }
 
+  async function onSelectDevice(deviceId: string) {
+    setSelectedDeviceId(deviceId);
+    if (!enabled || !localParticipant) return;
+
+    setBusy(true);
+    try {
+      try {
+        await room.switchActiveDevice("audioinput", deviceId);
+      } catch {
+        await localParticipant.setMicrophoneEnabled(false);
+        await localParticipant.setMicrophoneEnabled(true, { deviceId: { exact: deviceId } } as any);
+      }
+    } catch (err) {
+      console.error("[MicButton][device-switch]", err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <button
-      onClick={toggle}
-      disabled={!localParticipant || busy}
-      className={cn(
-        "flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition-all border",
-        enabled
-          ? "bg-rose-400/15 border-rose-400/40 text-rose-400 hover:bg-rose-400/20"
-          : "bg-cyan-400/10 border-cyan-400/30 text-cyan-400 hover:bg-cyan-400/15",
-      )}
-    >
-      {enabled ? <MicOff size={16} /> : <Mic size={16} />}
-      {busy ? "…" : enabled ? "Mute Mic" : "Start Mic"}
-    </button>
+    <div className="space-y-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <select
+          value={selectedDeviceId}
+          onChange={(e) => void onSelectDevice(e.target.value)}
+          className="min-w-0 flex-1 rounded-lg border border-white/[0.07] bg-black/20 px-3 py-2 text-xs text-slate-300 outline-none focus:border-cyan-400/40"
+        >
+          {devices.length === 0 ? (
+            <option value="">No microphone detected</option>
+          ) : (
+            devices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+            ))
+          )}
+        </select>
+
+        <button
+          type="button"
+          onClick={() => void refreshDevices()}
+          className="inline-flex items-center justify-center rounded-lg border border-white/[0.07] px-3 py-2 text-slate-500 hover:text-cyan-400 hover:border-cyan-400/30 transition-colors"
+          title="Refresh microphone list"
+        >
+          <RefreshCw size={14} />
+        </button>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <p className="min-w-0 text-xs text-slate-600 font-mono truncate">{deviceLabel}</p>
+
+        <button
+          onClick={() => void toggle()}
+          disabled={!localParticipant || busy || devices.length === 0}
+          className={cn(
+            "flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition-all border shrink-0",
+            enabled
+              ? "bg-rose-400/15 border-rose-400/40 text-rose-400 hover:bg-rose-400/20"
+              : "bg-cyan-400/10 border-cyan-400/30 text-cyan-400 hover:bg-cyan-400/15",
+          )}
+        >
+          {enabled ? <MicOff size={16} /> : <Mic size={16} />}
+          {busy ? "…" : enabled ? "Mute Mic" : "Start Mic"}
+        </button>
+      </div>
+    </div>
   );
 }
 EOF
@@ -2301,7 +2482,7 @@ export function ChatPanel() {
       <SectionHeader
         icon={<MessageSquare size={14} />}
         title="Session Chat"
-        subtitle={agent ? "DataChannel · agent reply relay not confirmed" : "no agent in room"}
+        subtitle={agent ? "DataChannel · agent reply relay not confirmed" : "waiting for agent in room"}
       />
 
       <p
@@ -2314,7 +2495,7 @@ export function ChatPanel() {
       >
         {agent
           ? "Messages sent via DataChannel. Agent replies appear here only if the backend relays them — no reply is fabricated."
-          : "Connect a session to enable text messaging."}
+          : "Waiting for agent to join room…"}
       </p>
 
       {/* Message history */}
@@ -3046,7 +3227,9 @@ import { cn }                 from "@/lib/utils";
 
 interface TokenData {
   token: string;
-  url:   string;
+  url: string;
+  roomName: string;
+  identity: string;
 }
 
 function ConnectionStatus() {
@@ -3078,7 +3261,6 @@ function RoomContent({ onDisconnect }: { onDisconnect: () => void }) {
         </button>
       </div>
 
-      {/* Invisible audio renderer — required for remote audio playback */}
       <RoomAudioRenderer />
 
       <MicButton />
@@ -3100,11 +3282,24 @@ export function SessionPanel() {
     setConnecting(true);
     setError(null);
     try {
-      const res  = await fetch("/api/livekit/token");
+      const res = await fetch("/api/livekit/token", { cache: "no-store" });
       const data = await res.json();
 
-      if (!res.ok)            throw new Error(data.error ?? `HTTP ${res.status}`);
-      if (!data.token || !data.url) throw new Error("Invalid token response from server");
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (!data.token || !data.url || !data.roomName) {
+        throw new Error("Invalid token response from server");
+      }
+
+      const dispatchRes = await fetch("/api/livekit/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomName: data.roomName,
+          metadata: { source: "dashboard", identity: data.identity },
+        }),
+      });
+      const dispatchData = await dispatchRes.json().catch(() => ({}));
+      if (!dispatchRes.ok) throw new Error(dispatchData.message ?? `Dispatch failed (${dispatchRes.status})`);
 
       setTokenData(data as TokenData);
     } catch (err) {
@@ -3121,7 +3316,11 @@ export function SessionPanel() {
 
   return (
     <GlassCard className="p-4 space-y-3">
-      <SectionHeader icon={<Radio size={14} />} title="Session" subtitle="voice-room · LiveKit" />
+      <SectionHeader
+        icon={<Radio size={14} />}
+        title="Session"
+        subtitle={`${tokenData?.roomName ?? "voice-room"} · LiveKit`}
+      />
 
       {!tokenData ? (
         <div className="space-y-3">
@@ -3142,7 +3341,7 @@ export function SessionPanel() {
           </button>
 
           <p className="text-xs text-slate-700 font-mono leading-relaxed">
-            Joins voice-room in listen-only mode. Click "Start Mic" after connecting to publish audio.
+            Creates a fresh LiveKit room, dispatches the agent, then joins listen-only. Choose your microphone and click "Start Mic" after connecting.
           </p>
         </div>
       ) : (

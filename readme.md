@@ -108,7 +108,9 @@ chmod +x bootstrap.sh
 
 cd dashboard
 chmod +x build-dashboard.sh
-./build-dashboard.sh
+cd /home/{PROFILE_NAME}/ai-projects
+# Enter the path where you downloaded it.
+/home/{PROFILE_NAME}/Desktop/voiceai-installer/dashboard/build-dashboard.sh
 
 cd /home/{PROFILE_NAME}/ai-projects/voiceai/bin/
 chmod +x voiceai-ctl.sh

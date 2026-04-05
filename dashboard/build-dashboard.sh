@@ -79,6 +79,7 @@ cat > package.json << 'EOF'
   "dependencies": {
     "@livekit/components-react": "^2.6.0",
     "@livekit/components-styles": "^1.1.2",
+    "@livekit/protocol": "^1.44.1",
     "clsx": "^2.1.1",
     "js-yaml": "^4.1.0",
     "livekit-client": "^2.5.0",
@@ -309,11 +310,12 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
+import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { serverConfig } from "@/server/config";
 import { LIVEKIT_ROOM } from "@/lib/constants";
 
 export async function GET(): Promise<NextResponse> {
-  const { livekitApiKey, livekitApiSecret, livekitUrl } = serverConfig;
+  const { livekitApiKey, livekitApiSecret, livekitUrl, voiceaiAgentName } = serverConfig;
 
   if (!livekitApiKey || !livekitApiSecret) {
     return NextResponse.json(
@@ -332,6 +334,14 @@ export async function GET(): Promise<NextResponse> {
     canPublish:     true,
     canSubscribe:   true,
     canPublishData: true,
+  });
+  at.roomConfig = new RoomConfiguration({
+    agents: [
+      new RoomAgentDispatch({
+        agentName: voiceaiAgentName,
+        metadata: JSON.stringify({ source: "dashboard", identity }),
+      }),
+    ],
   });
 
   const token = await at.toJwt();
@@ -760,6 +770,7 @@ export interface AgentHealth {
   uptime_s:        number;
   session_active:  boolean;
   room_name:       string | null;
+  participant_identity?: string | null;
   persona:         string;
   voice_mode:      string;
   voice_speaker:   string;
@@ -1064,6 +1075,33 @@ async function fetchAgentHealth(): Promise<AgentHealth> {
 
 export function useAgentState() {
   return usePoll<AgentHealth>(fetchAgentHealth, POLL.NORMAL);
+}
+EOF
+
+# ==============================================================================
+# 25.1 · hooks/useAgentTarget.ts
+# Agent truth comes from backend /agent/health for the current room.
+# ==============================================================================
+cat > hooks/useAgentTarget.ts << 'EOF'
+"use client";
+
+import { useMemo } from "react";
+import { useRoomContext } from "@livekit/components-react";
+import { useAgentState } from "./useAgentState";
+
+export function useAgentTarget() {
+  const room = useRoomContext();
+  const health = useAgentState();
+
+  const target = useMemo(() => {
+    const h = health.data;
+    if (!room || !h) return { ready: false, identity: null as string | null };
+    const sameRoom = !!h.session_active && !!h.room_name && h.room_name === room.name;
+    const identity = sameRoom ? (h.participant_identity ?? null) : null;
+    return { ready: sameRoom && !!identity, identity };
+  }, [health.data, room]);
+
+  return { ...target, health };
 }
 EOF
 
@@ -2397,8 +2435,9 @@ cat > components/session/ChatPanel.tsx << 'EOF'
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useRoomContext, useRemoteParticipants } from "@livekit/components-react";
-import { ParticipantKind, RoomEvent } from "livekit-client";
+import { useRoomContext } from "@livekit/components-react";
+import { RoomEvent } from "livekit-client";
+import { useAgentTarget } from "@/hooks/useAgentTarget";
 import { GlassCard }     from "@/components/shared/GlassCard";
 import { SectionHeader } from "@/components/shared/SectionHeader";
 import { Mono }          from "@/components/shared/Mono";
@@ -2414,11 +2453,8 @@ interface ChatMessage {
 }
 
 export function ChatPanel() {
-  const room    = useRoomContext();
-  const remotes = useRemoteParticipants();
-  const agent   = remotes.find(
-    (p) => p.kind === ParticipantKind.AGENT || p.identity.startsWith("agent"),
-  );
+  const room = useRoomContext();
+  const { ready: agentReady } = useAgentTarget();
 
   const [messages,  setMessages]  = useState<ChatMessage[]>([]);
   const [input,     setInput]     = useState("");
@@ -2482,20 +2518,20 @@ export function ChatPanel() {
       <SectionHeader
         icon={<MessageSquare size={14} />}
         title="Session Chat"
-        subtitle={agent ? "DataChannel · agent reply relay not confirmed" : "waiting for agent in room"}
+        subtitle={agentReady ? "DataChannel · agent reply relay not confirmed" : "waiting for agent startup"}
       />
 
       <p
         className={cn(
           "text-xs font-mono leading-relaxed rounded-lg border px-3 py-2",
-          agent
+          agentReady
             ? "border-slate-700/40 bg-black/10 text-slate-700"
             : "border-cyan-400/15 bg-cyan-400/[0.04] text-cyan-400/60",
         )}
       >
-        {agent
+        {agentReady
           ? "Messages sent via DataChannel. Agent replies appear here only if the backend relays them — no reply is fabricated."
-          : "Waiting for agent to join room…"}
+          : "Waiting for agent session to become ready…"}
       </p>
 
       {/* Message history */}
@@ -2589,8 +2625,8 @@ export function ChatPanel() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
-          placeholder={agent ? "Type a message…" : "Connect session first"}
-          disabled={!agent}
+          placeholder={agentReady ? "Type a message…" : "Connect session first"}
+          disabled={!agentReady}
           className="flex-1 rounded-md border border-white/[0.07] bg-black/30 px-3 py-2 text-xs text-slate-300 font-mono placeholder:text-slate-700 outline-none focus:border-cyan-400/40 disabled:opacity-40"
         />
         <button
@@ -2598,7 +2634,7 @@ export function ChatPanel() {
           disabled={!input.trim() || !agent}
           className={cn(
             "flex items-center gap-1.5 shrink-0 rounded-md border px-3 py-2 text-xs font-medium transition-colors",
-            input.trim() && agent
+            input.trim() && agentReady
               ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-400 hover:bg-cyan-400/15"
               : "border-white/[0.05] text-slate-600 cursor-not-allowed",
           )}
@@ -2763,8 +2799,8 @@ cat > components/session/VoiceControls.tsx << 'EOF'
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRoomContext, useRemoteParticipants } from "@livekit/components-react";
-import { ParticipantKind } from "livekit-client";
+import { useRoomContext } from "@livekit/components-react";
+import { useAgentTarget } from "@/hooks/useAgentTarget";
 import { usePersonaInventory } from "@/hooks/useInventory";
 import { VoicePreviewList }    from "./VoicePreviewList";
 import { GlassCard }     from "@/components/shared/GlassCard";
@@ -2782,23 +2818,20 @@ interface RpcResult {
 }
 
 function useAgentRpc() {
-  const room    = useRoomContext();
-  const remotes = useRemoteParticipants();
-  const agent   = remotes.find(
-    (p) => p.kind === ParticipantKind.AGENT || p.identity.startsWith("agent"),
-  );
+  const room = useRoomContext();
+  const { ready, identity } = useAgentTarget();
 
   async function call(method: string, payload: Record<string, unknown>): Promise<string> {
-    if (!agent) throw new Error("No agent in room");
+    if (!ready || !identity) throw new Error("Agent session is not ready yet");
     return room.localParticipant.performRpc({
-      destinationIdentity: agent.identity,
+      destinationIdentity: identity,
       method,
       payload:         JSON.stringify(payload),
       responseTimeout: 8_000,
     });
   }
 
-  return { call, agentReady: !!agent };
+  return { call, agentReady: ready };
 }
 
 interface SelectFieldProps {
@@ -3013,8 +3046,8 @@ cat > components/session/MemoryControls.tsx << 'EOF'
 "use client";
 
 import { useState } from "react";
-import { useRoomContext, useRemoteParticipants } from "@livekit/components-react";
-import { ParticipantKind } from "livekit-client";
+import { useRoomContext } from "@livekit/components-react";
+import { useAgentTarget } from "@/hooks/useAgentTarget";
 import { GlassCard }     from "@/components/shared/GlassCard";
 import { SectionHeader } from "@/components/shared/SectionHeader";
 import { InlineAlert }   from "@/components/shared/InlineAlert";
@@ -3028,11 +3061,8 @@ interface ActionResult {
 }
 
 export function MemoryControls() {
-  const room    = useRoomContext();
-  const remotes = useRemoteParticipants();
-  const agent   = remotes.find(
-    (p) => p.kind === ParticipantKind.AGENT || p.identity.startsWith("agent"),
-  );
+  const room = useRoomContext();
+  const { ready: agentReady, identity: agentIdentity } = useAgentTarget();
 
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [summary,       setSummary]       = useState("");
@@ -3041,9 +3071,9 @@ export function MemoryControls() {
   const [result,        setResult]        = useState<ActionResult | null>(null);
 
   async function rpc(method: string, payload: Record<string, unknown>): Promise<string> {
-    if (!agent) throw new Error("No agent in room");
+    if (!agentReady || !agentIdentity) throw new Error("Agent session is not ready yet");
     return room.localParticipant.performRpc({
-      destinationIdentity: agent.identity,
+      destinationIdentity: agentIdentity,
       method,
       payload:         JSON.stringify(payload),
       responseTimeout: 10_000,
@@ -3063,11 +3093,11 @@ export function MemoryControls() {
     }
   }
 
-  if (!agent) {
+  if (!agentReady || !agentIdentity) {
     return (
       <GlassCard className="p-4">
         <SectionHeader icon={<Database size={14} />} title="Memory" subtitle="requires active session" />
-        <p className="text-xs text-slate-600 font-mono mt-1">No agent in room — connect first.</p>
+        <p className="text-xs text-slate-600 font-mono mt-1">Agent session not ready yet — connect and wait a moment.</p>
       </GlassCard>
     );
   }
@@ -3290,17 +3320,6 @@ export function SessionPanel() {
         throw new Error("Invalid token response from server");
       }
 
-      const dispatchRes = await fetch("/api/livekit/dispatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomName: data.roomName,
-          metadata: { source: "dashboard", identity: data.identity },
-        }),
-      });
-      const dispatchData = await dispatchRes.json().catch(() => ({}));
-      if (!dispatchRes.ok) throw new Error(dispatchData.message ?? `Dispatch failed (${dispatchRes.status})`);
-
       setTokenData(data as TokenData);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -3341,7 +3360,7 @@ export function SessionPanel() {
           </button>
 
           <p className="text-xs text-slate-700 font-mono leading-relaxed">
-            Creates a fresh LiveKit room, dispatches the agent, then joins listen-only. Choose your microphone and click "Start Mic" after connecting.
+            Creates a fresh LiveKit room. The participant token dispatches the configured agent on connect. Choose your microphone and click "Start Mic" after connecting.
           </p>
         </div>
       ) : (

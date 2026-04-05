@@ -506,9 +506,29 @@ PYEOF
 cat > "$ROOT/admin/tts_switch.py" <<'PYEOF'
 #!/usr/bin/env python3
 """VoiceAI Admin — Global TTS engine switch. Backend-admin only. NOT session-voice accessible."""
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys, time, urllib.request, urllib.error
 ROUTER = os.environ.get("TTS_ROUTER_URL", "http://127.0.0.1:5200")
 VALID  = frozenset({"customvoice", "voicedesign", "chatterbox"})
+POLL_INTERVAL_S = 2.0
+POLL_TIMEOUT_S  = 210.0
+
+def status():
+    try:
+        with urllib.request.urlopen(f"{ROUTER}/health", timeout=5) as r: return json.loads(r.read())
+    except Exception as e: return {"online": False, "error": str(e)}
+
+def _wait_for_mode(mode):
+    deadline = time.time() + POLL_TIMEOUT_S
+    last = None
+    while time.time() < deadline:
+        snap = status(); last = snap
+        if snap.get("router_phase") == "error":
+            raise SystemExit(snap.get("last_error") or f"Router entered error phase while switching to '{mode}'")
+        if snap.get("active_mode") == mode and snap.get("worker_ready") and not snap.get("switching"):
+            return snap
+        time.sleep(POLL_INTERVAL_S)
+    suffix = f" Last error: {last.get('last_error')}" if isinstance(last, dict) and last.get("last_error") else ""
+    raise SystemExit(f"Timed out waiting for '{mode}' to become ready.{suffix}")
 
 def switch(mode):
     if mode not in VALID: raise SystemExit(f"Invalid mode '{mode}'. Valid: {sorted(VALID)}")
@@ -516,14 +536,18 @@ def switch(mode):
                                  data=json.dumps({"mode": mode}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r: return json.loads(r.read())
-    except urllib.error.HTTPError as e: raise SystemExit(f"HTTP {e.code}: {e.read().decode()}")
-    except urllib.error.URLError  as e: raise SystemExit(f"Router unreachable: {e.reason}")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"HTTP {e.code}: {e.read().decode()}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"Router unreachable: {e.reason}")
 
-def status():
-    try:
-        with urllib.request.urlopen(f"{ROUTER}/health", timeout=5) as r: return json.loads(r.read())
-    except Exception as e: return {"online": False, "error": str(e)}
+    if data.get("status") == "already_active":
+        return {"ok": True, "message": f"TTS engine already active: {mode}", **data}
+
+    settled = _wait_for_mode(mode)
+    return {"ok": True, "message": f"TTS engine active: {mode}", "health": settled, **data}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2: print(f"Usage: tts_switch.py <mode|status>"); sys.exit(1)

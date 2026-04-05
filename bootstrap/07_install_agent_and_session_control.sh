@@ -154,12 +154,13 @@ PYEOF
 cat > "$AGENT_SRC/admin.py" <<'PYEOF'
 """Agent health server. Port 5800, stdlib daemon thread."""
 from __future__ import annotations
-import json, os, threading, time
+import json, os, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 _HOST = "127.0.0.1"
 _PORT = int(os.environ.get("AGENT_ADMIN_PORT", "5800"))
+_TTS_ROUTER_URL = os.environ.get("TTS_ROUTER_URL", "http://127.0.0.1:5200")
 _state: dict[str, Any] = {
     "start_time": time.time(), "session_active": False, "room_name": None,
     "participant_identity": None,
@@ -170,10 +171,21 @@ _state: dict[str, Any] = {
 
 def update(**kwargs: Any) -> None: _state.update(kwargs)
 
+def _refresh_voice_mode() -> None:
+    try:
+        with urllib.request.urlopen(f"{_TTS_ROUTER_URL}/health", timeout=1.5) as resp:
+            data = json.loads(resp.read())
+        mode = data.get("active_mode")
+        if isinstance(mode, str) and mode:
+            _state["voice_mode"] = mode
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        pass
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def do_GET(self):
         if self.path in ("/health", "/status"):
+            _refresh_voice_mode()
             snap = {"status": "ok", "uptime_s": round(time.time() - _state["start_time"], 1),
                     **{k: v for k, v in _state.items() if k != "start_time"}}
             body = json.dumps(snap).encode()
@@ -393,6 +405,8 @@ def register_rpc_methods(room, agent, voice_state: VoiceState,
         if "voice"    in payload: voice_state.voice    = payload["voice"]
         if "language" in payload: voice_state.language = payload["language"]
         if "instruct" in payload: voice_state.instruct = payload["instruct"]
+        agent_admin.update(voice_speaker=voice_state.voice,
+                           voice_language=voice_state.language)
         await _set_attrs(room, {
             "va.voice":    voice_state.voice,
             "va.language": voice_state.language,
@@ -511,6 +525,13 @@ def _load_persona(name: str) -> str:
             return txt.strip()
     return "You are a helpful AI assistant."
 
+
+def _normalized_stt_language(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
     voice_state  = VoiceState(persona=cfg.DEFAULT_PERSONA)
@@ -533,12 +554,15 @@ async def entrypoint(ctx: JobContext):
         base_url=cfg.LLM_BASE_URL,
         api_key="local",
     )
-    stt = lk_openai.STT(
-        model=cfg.STT_MODEL,
-        base_url=cfg.STT_BASE_URL,
-        api_key="local",
-        language=cfg.STT_LANGUAGE or None,
-    )
+    stt_language = _normalized_stt_language(cfg.STT_LANGUAGE)
+    stt_kwargs = {
+        "model": cfg.STT_MODEL,
+        "base_url": cfg.STT_BASE_URL,
+        "api_key": "local",
+    }
+    if stt_language is not None:
+        stt_kwargs["language"] = stt_language
+    stt = lk_openai.STT(**stt_kwargs)
     tts = lk_openai.TTS(
         model="tts-1",
         base_url=cfg.TTS_ROUTER_URL + "/v1",
@@ -632,7 +656,7 @@ AGENT_ENV="$AGENT_DIR/.env"
 '
     printf 'STT_MODEL=%s
 '               "$STT_DEFAULT_MODEL"
-    printf 'STT_LANGUAGE=
+    printf 'STT_LANGUAGE=en
 '
     printf 'DEFAULT_PERSONA=english_teacher
 '

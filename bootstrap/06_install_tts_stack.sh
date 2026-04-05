@@ -198,16 +198,22 @@ async def probe_worker(state: RouterState, client: httpx.AsyncClient) -> None:
     state.phase = Phase.PROBING; _log_phase(Phase.PROBING)
     deadline = time.monotonic() + cfg.PROBE_TIMEOUT_S
     while time.monotonic() < deadline:
+        child = state.child_proc
+        if child is None:
+            raise RuntimeError("Worker process disappeared during probe.")
+        if child.returncode is not None:
+            raise RuntimeError(f"Worker exited during probe (code={child.returncode})")
         try:
             r = await client.get(f"{cfg.WORKER_URL}/health", timeout=cfg.PROBE_INTERVAL_S)
             if r.status_code == 200 and r.json().get("model_loaded"):
                 return
-        except Exception: pass
+        except Exception:
+            pass
         await asyncio.sleep(cfg.PROBE_INTERVAL_S)
     raise RuntimeError(f"Worker probe timeout after {cfg.PROBE_TIMEOUT_S}s")
 
 async def execute_switch(state: RouterState, mode: str, client: httpx.AsyncClient) -> None:
-    state.switch_start_ts = time.monotonic(); state.target_mode = mode
+    state.switch_start_ts = time.monotonic(); state.target_mode = mode; state.last_error = None
     try:
         await drain_inflight(state)
         await terminate_child(state)
@@ -216,11 +222,11 @@ async def execute_switch(state: RouterState, mode: str, client: httpx.AsyncClien
         await spawn_worker(state, mode)
         await probe_worker(state, client)
         state.phase = Phase.IDLE; state.active_mode = mode
-        state.target_mode = None; state.total_switches += 1
+        state.target_mode = None; state.total_switches += 1; state.last_error = None
         log.info(_SEP); log.info("  ✓ mode=%s  %.1fs", mode,
                                   time.monotonic() - (state.switch_start_ts or 0)); log.info(_SEP)
     except Exception as exc:
-        state.phase = Phase.ERROR; state.last_error = str(exc); raise
+        state.phase = Phase.ERROR; state.last_error = str(exc); state.target_mode = None; raise
 PYEOF
 
 cat > "$ROUTER_ROUTES/__init__.py" <<'PYEOF'
@@ -246,12 +252,17 @@ async def health() -> dict:
             if r.status_code == 200: w = r.json(); wr = w.get("model_loaded", False)
         except Exception: pass
     return {
-        "status":       "ok" if _state.phase == Phase.IDLE else _state.phase.value,
-        "router_phase": _state.phase.value,
-        "active_mode":  _state.active_mode,
-        "target_mode":  _state.target_mode,
-        "switching":    _state.phase not in (Phase.IDLE, Phase.ERROR),
-        "worker_ready": wr, "worker": w, "last_error": _state.last_error,
+        "status":         "ok" if _state.phase == Phase.IDLE else _state.phase.value,
+        "router_phase":   _state.phase.value,
+        "active_mode":    _state.active_mode,
+        "target_mode":    _state.target_mode,
+        "switching":      _state.phase not in (Phase.IDLE, Phase.ERROR),
+        "worker_ready":   wr,
+        "worker":         w,
+        "last_error":     _state.last_error,
+        "inflight":       _state.inflight,
+        "total_requests": _state.total_requests,
+        "total_switches": _state.total_switches,
     }
 
 @router.get("/v1/models")
@@ -609,12 +620,23 @@ class ChatterboxEngine(TTSEngine):
     def model(self): return self._model
 
     def load(self):
-        import torch
+        import os, torch
         if not CHATTERBOX_DIR.is_dir():
             raise RuntimeError(f"Chatterbox model dir not found: {CHATTERBOX_DIR}")
+        os.environ.setdefault("TRANSFORMERS_ATTN_IMPLEMENTATION", "eager")
         from chatterbox.mtl_tts import ChatterboxMultilingualTTS
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model = ChatterboxMultilingualTTS.from_local(CHATTERBOX_DIR, device=device)
+
+        loader = getattr(ChatterboxMultilingualTTS, "from_local", None)
+        if callable(loader):
+            try:
+                self._model = loader(CHATTERBOX_DIR, device=device)
+            except TypeError:
+                self._model = loader(str(CHATTERBOX_DIR), device=device)
+        else:
+            # Upstream README documents from_pretrained(device=...). Keep this as the canonical fallback.
+            self._model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+
         self._sr = getattr(self._model, "sr", 24000)
         log.info("[CHATTERBOX] Ready. device=%s  voices=%d", device, len(list_available_voices()))
 
@@ -711,7 +733,7 @@ PYEOF
 cat > "$WORKER_SRC/main.py" <<'PYEOF'
 #!/usr/bin/env python3
 from __future__ import annotations
-import asyncio, logging, logging.config, signal, sys
+import asyncio, logging, logging.config
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -741,7 +763,6 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"Invalid TTS_MODE='{cfg.TTS_MODE}'")
     engine = build_engine(cfg.TTS_MODE); engine.load(); _engine_ref = engine
     hr.set_engine(engine); sr.set_engine(engine)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("[WORKER] Engine ready: %s", cfg.TTS_MODE)
     yield
     if _engine_ref is not None: release(_engine_ref.model); _engine_ref = None

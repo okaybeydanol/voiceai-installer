@@ -300,7 +300,7 @@ EOF
 
 # ==============================================================================
 # 12 · app/api/livekit/token/route.ts
-# Server-only. Room is fixed to "voice-room". Identity is unique per request.
+# Server-only. Room names are minted per request. Identity is unique per request.
 # Token grants canPublish=true so MicButton can enable the mic after connect.
 # The client connects with audio={false} — listen-only until the user acts.
 # ==============================================================================
@@ -310,12 +310,11 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
-import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { serverConfig } from "@/server/config";
 import { LIVEKIT_ROOM } from "@/lib/constants";
 
 export async function GET(): Promise<NextResponse> {
-  const { livekitApiKey, livekitApiSecret, livekitUrl, voiceaiAgentName } = serverConfig;
+  const { livekitApiKey, livekitApiSecret, livekitUrl } = serverConfig;
 
   if (!livekitApiKey || !livekitApiSecret) {
     return NextResponse.json(
@@ -335,14 +334,6 @@ export async function GET(): Promise<NextResponse> {
     canSubscribe:   true,
     canPublishData: true,
   });
-  at.roomConfig = new RoomConfiguration({
-    agents: [
-      new RoomAgentDispatch({
-        agentName: voiceaiAgentName,
-        metadata: JSON.stringify({ source: "dashboard", identity }),
-      }),
-    ],
-  });
 
   const token = await at.toJwt();
   return NextResponse.json({ token, url: livekitUrl, roomName, identity });
@@ -352,7 +343,7 @@ EOF
 # ==============================================================================
 # ==============================================================================
 # 13 · app/api/livekit/dispatch/route.ts — explicit agent dispatch
-# Creates a dispatch for the configured agent to join the requested room.
+# Creates the canonical dispatch for the configured agent to join the requested room.
 # ==============================================================================
 cat > app/api/livekit/dispatch/route.ts << 'EOF'
 export const runtime = "nodejs";
@@ -404,9 +395,43 @@ cat > app/api/tts/switch/route.ts << 'EOF'
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
-import { TTS_MODES, type TtsMode } from "@/lib/types";
+import { TTS_MODES, TTS_MODE_LABELS, type TtsHealth, type TtsMode } from "@/lib/types";
 
-const TTS_ROUTER_URL = "http://127.0.0.1:5200";
+const TTS_ROUTER_URL   = "http://127.0.0.1:5200";
+const POLL_INTERVAL_MS = 2_000;
+const POLL_TIMEOUT_MS  = 210_000;
+
+async function readTtsHealth(): Promise<TtsHealth> {
+  const res = await fetch(`${TTS_ROUTER_URL}/health`, {
+    cache:  "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`TTS health HTTP ${res.status}`);
+  return res.json() as Promise<TtsHealth>;
+}
+
+async function waitForTargetMode(mode: TtsMode): Promise<TtsHealth> {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let last: TtsHealth | null = null;
+
+  while (Date.now() < deadline) {
+    const health = await readTtsHealth();
+    last = health;
+
+    if (health.router_phase === "error") {
+      throw new Error(health.last_error ?? `Router entered error phase while switching to '${mode}'.`);
+    }
+
+    if (health.active_mode === mode && health.worker_ready && !health.switching) {
+      return health;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+
+  const suffix = last?.last_error ? ` Last error: ${last.last_error}` : "";
+  throw new Error(`Timed out waiting for '${mode}' to become ready.${suffix}`);
+}
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   let body: unknown;
@@ -424,18 +449,45 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
+  const targetMode = mode as TtsMode;
+  const label = TTS_MODE_LABELS[targetMode];
+
   try {
     const upstream = await fetch(`${TTS_ROUTER_URL}/admin/switch_model`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ mode: mode as TtsMode }),
+      body:    JSON.stringify({ mode: targetMode }),
       signal:  AbortSignal.timeout(10_000),
     });
-    const data = await upstream.json().catch(() => ({}));
-    return NextResponse.json(data, { status: upstream.status });
+
+    const data = await upstream.json().catch(() => ({} as Record<string, unknown>));
+    if (!upstream.ok) {
+      const message =
+        typeof data.message === "string" ? data.message :
+        typeof data.detail === "string"  ? data.detail  :
+        `TTS switch failed (HTTP ${upstream.status})`;
+      return NextResponse.json({ ok: false, message }, { status: upstream.status });
+    }
+
+    if (data.status === "already_active") {
+      return NextResponse.json({
+        ok: true,
+        message: `TTS engine already active: ${label}.`,
+        targetMode,
+        settled: true,
+      });
+    }
+
+    await waitForTargetMode(targetMode);
+    return NextResponse.json({
+      ok: true,
+      message: `TTS engine active: ${label}.`,
+      targetMode,
+      settled: true,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ ok: false, message: `TTS router unreachable: ${message}` }, { status: 502 });
+    return NextResponse.json({ ok: false, message: `TTS router switch failed: ${message}` }, { status: 502 });
   }
 }
 EOF
@@ -1086,20 +1138,29 @@ cat > hooks/useAgentTarget.ts << 'EOF'
 "use client";
 
 import { useMemo } from "react";
-import { useRoomContext } from "@livekit/components-react";
+import { useRemoteParticipants, useRoomContext } from "@livekit/components-react";
 import { useAgentState } from "./useAgentState";
 
 export function useAgentTarget() {
   const room = useRoomContext();
+  const remoteParticipants = useRemoteParticipants();
   const health = useAgentState();
 
   const target = useMemo(() => {
+    if (!room) return { ready: false, identity: null as string | null };
+
     const h = health.data;
-    if (!room || !h) return { ready: false, identity: null as string | null };
-    const sameRoom = !!h.session_active && !!h.room_name && h.room_name === room.name;
-    const identity = sameRoom ? (h.participant_identity ?? null) : null;
-    return { ready: sameRoom && !!identity, identity };
-  }, [health.data, room]);
+    const sameRoomByHealth = !!h?.session_active && !!h?.room_name && h.room_name === room.name;
+    const healthIdentity = sameRoomByHealth ? (h?.participant_identity ?? null) : null;
+    const remoteFromHealth = healthIdentity
+      ? remoteParticipants.find((participant) => participant.identity === healthIdentity) ?? null
+      : null;
+    const fallbackRemote = remoteParticipants[0] ?? null;
+    const identity = remoteFromHealth?.identity ?? healthIdentity ?? fallbackRemote?.identity ?? null;
+    const ready = sameRoomByHealth ? !!identity : !!fallbackRemote;
+
+    return { ready, identity };
+  }, [health.data, remoteParticipants, room]);
 
   return { ...target, health };
 }
@@ -1536,7 +1597,11 @@ export function AppShell() {
 
       <main className="flex-1 overflow-hidden">
         {tab === "overview"  && <OverviewTab />}
-        {tab === "session"   && <SessionTab  />}
+
+        <div className={tab === "session" ? "h-full" : "hidden h-full"}>
+          <SessionTab />
+        </div>
+
         {tab === "personas"  && <PersonasTab />}
         {tab === "services"  && <ServicesTab />}
         {tab === "memory"    && <MemoryTab   />}
@@ -1975,7 +2040,10 @@ export function TtsCard() {
       });
       const data = await res.json() as SwitchResult;
       setResult(data);
-      if (res.ok) refetch();
+      if (res.ok) {
+        setSelected("");
+        refetch();
+      }
     } catch (err) {
       setResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -2490,7 +2558,7 @@ export function ChatPanel() {
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text) return;
+    if (!text || !room || !agentReady) return;
 
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "operator", text, ts: new Date() }]);
     setInput("");
@@ -2631,7 +2699,7 @@ export function ChatPanel() {
         />
         <button
           onClick={sendMessage}
-          disabled={!input.trim() || !agent}
+          disabled={!input.trim() || !agentReady || !room}
           className={cn(
             "flex items-center gap-1.5 shrink-0 rounded-md border px-3 py-2 text-xs font-medium transition-colors",
             input.trim() && agentReady
@@ -3233,7 +3301,7 @@ EOF
 cat > components/session/SessionPanel.tsx << 'EOF'
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -3277,9 +3345,54 @@ function ConnectionStatus() {
   );
 }
 
-function RoomContent({ onDisconnect }: { onDisconnect: () => void }) {
+function AgentDispatchBridge({ tokenData, onError }: { tokenData: TokenData; onError: (message: string) => void }) {
+  const state = useConnectionState();
+  const dispatchedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (state !== ConnectionState.Connected) return;
+    if (dispatchedRef.current === tokenData.roomName) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const dispatchRes = await fetch("/api/livekit/dispatch", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({
+            roomName: tokenData.roomName,
+            metadata: {
+              source: "dashboard",
+              callerIdentity: tokenData.identity,
+            },
+          }),
+        });
+        const dispatchData = await dispatchRes.json().catch(() => ({}));
+        if (!dispatchRes.ok || dispatchData.ok === false) {
+          throw new Error(dispatchData.message ?? `Agent dispatch failed (HTTP ${dispatchRes.status})`);
+        }
+        if (!cancelled) {
+          dispatchedRef.current = tokenData.roomName;
+        }
+      } catch (err) {
+        if (!cancelled) {
+          onError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [onError, state, tokenData]);
+
+  return null;
+}
+
+function RoomContent({ tokenData, onDisconnect, onError }: { tokenData: TokenData; onDisconnect: () => void; onError: (message: string) => void }) {
   return (
     <div className="space-y-3">
+      <AgentDispatchBridge tokenData={tokenData} onError={onError} />
+
       <div className="flex items-center justify-between">
         <ConnectionStatus />
         <button
@@ -3316,7 +3429,7 @@ export function SessionPanel() {
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      if (!data.token || !data.url || !data.roomName) {
+      if (!data.token || !data.url || !data.roomName || !data.identity) {
         throw new Error("Invalid token response from server");
       }
 
@@ -3360,7 +3473,7 @@ export function SessionPanel() {
           </button>
 
           <p className="text-xs text-slate-700 font-mono leading-relaxed">
-            Creates a fresh LiveKit room. The participant token dispatches the configured agent on connect. Choose your microphone and click "Start Mic" after connecting.
+            Creates a fresh LiveKit room, joins listen-only first, then explicitly dispatches the configured agent after the browser is connected. Choose your microphone and click "Start Mic" after connecting.
           </p>
         </div>
       ) : (
@@ -3371,9 +3484,9 @@ export function SessionPanel() {
           audio={false}
           video={false}
           onDisconnected={disconnect}
-          onError={(err) => { setError(err.message); disconnect(); }}
+          onError={(err) => { setTokenData(null); setError(err.message); }}
         >
-          <RoomContent onDisconnect={disconnect} />
+          <RoomContent tokenData={tokenData} onDisconnect={disconnect} onError={setError} />
         </LiveKitRoom>
       )}
     </GlassCard>

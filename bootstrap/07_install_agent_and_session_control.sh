@@ -162,6 +162,7 @@ _HOST = "127.0.0.1"
 _PORT = int(os.environ.get("AGENT_ADMIN_PORT", "5800"))
 _state: dict[str, Any] = {
     "start_time": time.time(), "session_active": False, "room_name": None,
+    "participant_identity": None,
     "persona": "english_teacher", "voice_mode": "customvoice", "voice_speaker": "Aiden",
     "voice_language": "English", "session_tokens": None,
     "memory_enabled": True, "last_checkpoint": None, "last_error": None,
@@ -550,11 +551,24 @@ async def entrypoint(ctx: JobContext):
 
     register_rpc_methods(ctx.room, agent, voice_state, memory_state, memory_mod)
 
-    agent_admin.update(session_active=True, room_name=ctx.room.name,
-                       persona=voice_state.persona, memory_enabled=cfg.VOICEAI_MEMORY)
-    log.info("[MAIN] Session started  room=%s  persona=%s  memory=%s",
-             ctx.room.name, voice_state.persona, cfg.VOICEAI_MEMORY)
-    await session.start(agent=agent, room=ctx.room)
+    participant_identity = getattr(ctx.room.local_participant, "identity", None)
+    agent_admin.update(session_active=True,
+                       room_name=ctx.room.name,
+                       participant_identity=participant_identity,
+                       persona=voice_state.persona,
+                       memory_enabled=cfg.VOICEAI_MEMORY,
+                       voice_speaker=voice_state.voice,
+                       voice_language=voice_state.language)
+    log.info("[MAIN] Session started  room=%s  participant=%s  persona=%s  memory=%s",
+             ctx.room.name, participant_identity, voice_state.persona, cfg.VOICEAI_MEMORY)
+    try:
+        await session.start(agent=agent, room=ctx.room)
+    finally:
+        agent_admin.update(session_active=False,
+                           room_name=None,
+                           participant_identity=None,
+                           memory_enabled=memory_state.enabled)
+        log.info("[MAIN] Session ended  room=%s", ctx.room.name)
 
 if __name__ == "__main__":
     agent_admin.start()

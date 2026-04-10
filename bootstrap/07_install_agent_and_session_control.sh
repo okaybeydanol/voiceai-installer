@@ -560,6 +560,9 @@ async def entrypoint(ctx: JobContext):
         model=cfg.LLM_MODEL,
         base_url=cfg.LLM_BASE_URL,
         api_key="local",
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
     )
     stt_language = _normalized_stt_language(cfg.STT_LANGUAGE)
     stt_kwargs = {

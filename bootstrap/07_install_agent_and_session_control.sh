@@ -493,7 +493,7 @@ cat > "$AGENT_SRC/main.py" <<'PYEOF'
 from __future__ import annotations
 import asyncio, logging, logging.config, uuid
 from pathlib import Path
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
+from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, room_io
 from livekit.agents.llm import ChatContext
 from livekit.plugins import openai as lk_openai, silero
 from . import admin as agent_admin
@@ -534,9 +534,16 @@ def _normalized_stt_language(value: str | None) -> str | None:
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
+    participant = await ctx.wait_for_participant()
     voice_state  = VoiceState(persona=cfg.DEFAULT_PERSONA)
     memory_state = MemoryState(enabled=cfg.VOICEAI_MEMORY,
                                session_id=str(uuid.uuid4()))
+    shutdown_event = asyncio.Event()
+
+    async def _on_shutdown(*_args):
+        shutdown_event.set()
+
+    ctx.add_shutdown_callback(_on_shutdown)
 
     # Memory init (non-fatal)
     memory_mod = None
@@ -568,14 +575,16 @@ async def entrypoint(ctx: JobContext):
         base_url=cfg.TTS_ROUTER_URL + "/v1",
         api_key="local",
         voice=voice_state.voice,
+        response_format="wav",
     )
     vad = silero.VAD.load()
-    agent = Agent(instructions=system_prompt, llm=llm, stt=stt, tts=tts, vad=vad)
-    session = AgentSession()
+    session = AgentSession(llm=llm, stt=stt, tts=tts, vad=vad)
+    agent = Agent(instructions=system_prompt)
 
     register_rpc_methods(ctx.room, agent, voice_state, memory_state, memory_mod)
 
     participant_identity = getattr(ctx.room.local_participant, "identity", None)
+    linked_identity = getattr(participant, "identity", None)
     agent_admin.update(session_active=True,
                        room_name=ctx.room.name,
                        participant_identity=participant_identity,
@@ -583,10 +592,18 @@ async def entrypoint(ctx: JobContext):
                        memory_enabled=cfg.VOICEAI_MEMORY,
                        voice_speaker=voice_state.voice,
                        voice_language=voice_state.language)
-    log.info("[MAIN] Session started  room=%s  participant=%s  persona=%s  memory=%s",
-             ctx.room.name, participant_identity, voice_state.persona, cfg.VOICEAI_MEMORY)
+    log.info("[MAIN] Session started  room=%s  participant=%s  linked_user=%s  persona=%s  memory=%s",
+             ctx.room.name, participant_identity, linked_identity, voice_state.persona, cfg.VOICEAI_MEMORY)
     try:
-        await session.start(agent=agent, room=ctx.room)
+        await session.start(
+            agent=agent,
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                participant_identity=linked_identity,
+                close_on_disconnect=True,
+            ),
+        )
+        await shutdown_event.wait()
     finally:
         agent_admin.update(session_active=False,
                            room_name=None,

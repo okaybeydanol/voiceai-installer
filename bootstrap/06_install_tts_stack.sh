@@ -17,6 +17,9 @@ BOOTSTRAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ROOT="${ROOT:-$HOME/ai-projects/voiceai}"
 SAFE_JOBS="${SAFE_JOBS:-4}"
+ROUTER_PYTHON="${ROUTER_PYTHON:-3.12}"
+QWEN3_17_PYTHON="${QWEN3_17_PYTHON:-3.12}"
+CHATTERBOX_PYTHON="${CHATTERBOX_PYTHON:-3.11}"
 
 TTS_DIR="$ROOT/tts"
 ROUTER_SRC="$TTS_DIR/router/src";   ROUTER_ROUTES="$ROUTER_SRC/routes"
@@ -30,9 +33,9 @@ mkdir -p "$ROUTER_SRC" "$ROUTER_ROUTES" "$WORKER_SRC" "$WORKER_ENGINES" "$WORKER
 # §8 — VENVS + REPOS
 # ==============================================================================
 _banner "06 / TTS — Router venv"
-_venv_version_ok "$REPOS_DIR/router/.venv" "3.12" \
+_venv_version_ok "$REPOS_DIR/router/.venv" "$ROUTER_PYTHON" \
   && _skip "Router .venv" \
-  || uv venv "$REPOS_DIR/router/.venv" -p 3.12
+  || uv venv "$REPOS_DIR/router/.venv" -p "$ROUTER_PYTHON"
 
 ROUTER_DEPS_MARKER="$REPOS_DIR/router/.bootstrap_deps_ok"
 if [ ! -f "$ROUTER_DEPS_MARKER" ]; then
@@ -50,7 +53,7 @@ _banner "06 / TTS — Qwen3-TTS repo + venv"
 QWEN_DEPS_MARKER="$REPOS_DIR/qwen3-17b/.bootstrap_deps_ok"
 if [ ! -f "$QWEN_DEPS_MARKER" ]; then
   _step "Qwen3-TTS venv (flash-attn build ~20-40 min — be patient)"
-  uv venv "$REPOS_DIR/qwen3-17b/.venv" -p 3.12
+  uv venv "$REPOS_DIR/qwen3-17b/.venv" -p "$QWEN3_17_PYTHON"
   # shellcheck source=/dev/null
   . "$REPOS_DIR/qwen3-17b/.venv/bin/activate"
   uv pip install --upgrade pip setuptools wheel
@@ -72,7 +75,7 @@ _banner "06 / TTS — Chatterbox repo + venv"
 
 CHATTERBOX_DEPS_MARKER="$REPOS_DIR/chatterbox/.bootstrap_deps_ok"
 if [ ! -f "$CHATTERBOX_DEPS_MARKER" ]; then
-  uv venv "$REPOS_DIR/chatterbox/.venv" -p 3.11
+  uv venv "$REPOS_DIR/chatterbox/.venv" -p "$CHATTERBOX_PYTHON"
   # shellcheck source=/dev/null
   . "$REPOS_DIR/chatterbox/.venv/bin/activate"
   uv pip install "torch==2.7.0" "torchvision==0.22.0" "torchaudio==2.7.0" \
